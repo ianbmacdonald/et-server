@@ -1,0 +1,25 @@
+et-server
+Copyright 2026 Ian MacDonald
+
+This product is derived from tflite-server (https://github.com/ianbmacdonald/tflite-server),
+which is itself derived from ort-server (https://github.com/lemonade-sdk/ort-server). Both are
+licensed under the Apache License, Version 2.0. The lineage is:
+
+  ort-server (ONNX Runtime)  ->  tflite-server (LiteRT)  ->  et-server (ExecuTorch)
+
+The /classify contract, manifest handling, tokenizer handling and model-family allowlist in
+src/main.cpp come from ort-server's src/main.cpp by way of tflite-server; the inference engine
+was changed to an ExecuTorch Module with the XNNPACK delegate. build-prplos-x86_64.sh,
+package-release.sh and tools/compare.py follow tflite-server's. tools/export_pte.py follows the
+export.py shipped in the lemonade-sdk *-ONNX classifier repositories.
+
+It links:
+- ExecuTorch (https://github.com/pytorch/executorch), BSD 3-Clause License
+- XNNPACK, BSD 3-Clause License
+- cpuinfo, BSD 2-Clause License
+- pthreadpool, BSD 2-Clause License
+- Eigen, Mozilla Public License 2.0
+- FlatBuffers, Apache License 2.0
+- HuggingFace tokenizers via mlc-ai/tokenizers-cpp, Apache License 2.0
+- cpp-httplib, MIT License
+- nlohmann/json, MIT License
