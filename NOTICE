@@ -21,5 +21,8 @@ It links:
 - Eigen, Mozilla Public License 2.0
 - FlatBuffers, Apache License 2.0
 - HuggingFace tokenizers via mlc-ai/tokenizers-cpp, Apache License 2.0
+- Oniguruma (through the onig and onig_sys Rust crates), BSD 2-Clause License
+- the other Rust crates the tokenizers C shim links, listed with their licences in
+  licenses/rust-crates.txt
 - cpp-httplib, MIT License
 - nlohmann/json, MIT License

@@ -46,21 +46,28 @@ lets the XNNPACK weight cache share one packed copy across all methods.
 et-server --model-path <model-dir> --port <n> [--threads N] [--seq-lens 64,512] [--weight-cache FILE] [--verbose]
 ```
 
-- `--threads N`: XNNPACK and kernel threads (default: one per hardware thread).
+- `--threads N`: XNNPACK and kernel threads, 1 to 1024 (default: one per hardware thread).
 - `--seq-lens 64,512`: load only these methods. Every loaded method shares one packed copy of the
   weights, so a subset saves little memory; it saves load time.
 - `--weight-cache FILE`: accepted for command-line compatibility with tflite-server and checked
   (at most 254 bytes, since ExecuTorch truncates longer backend options), but **not used in v0.1.0**:
-  the packed weights are shared in memory. An on-disk cache is planned for v0.2.0.
-- `--verbose`: log the methods loaded, the load time, and the method each request runs on.
+  the packed weights are shared in memory. An on-disk cache is planned for v0.2.0. A started server
+  prints one line saying the flag was accepted and not used.
+- `--verbose`: log the methods loaded, the load time, the default thread stack size, and the token
+  count, last token id and method of each request.
+
+An unknown argument, a flag with no value, or a `--port` outside 1..65535 fails with the usage message.
+A failed start prints exactly one `et-server:` line on stderr and exits 1.
 
 - `GET /health` returns `{"status":"ok","engine":"executorch"}` once every method is loaded and warmed.
 - `POST /classify {"input": "...", "top_k": 2}` (or `"text"`) returns `{"labels": {"LABEL_1": 0.98, ...}}`.
-  A malformed body is 400, a body over 64 KiB is 413, a model fault is 500. Text longer than
-  `max_length * 32` bytes is cut at a UTF-8 boundary before tokenizing, so an oversized request cannot
-  hold the tokenizer.
+  A malformed body (including invalid UTF-8) is 400, a body over 64 KiB is 413, a model fault is 500.
+  The whole text is tokenized and the tokens are cut to `max_length`, keeping the trailing `[SEP]`;
+  the 64 KiB body cap bounds the tokenizer's work. There is no byte-level clip before tokenizing,
+  because whitespace or zero-width padding would then push real content out of view.
 
-It binds 127.0.0.1 only. Lemonade reaches it as a local subprocess. At startup it raises its own
+It binds 127.0.0.1 only, without `SO_REUSEPORT`, so a second instance on a port in use fails to bind
+instead of sharing its traffic. The binary sets a 1 MiB default thread stack (musl's default is 128 KiB). Lemonade reaches it as a local subprocess. At startup it raises its own
 `oom_score_adj` to 500, so on a gateway that also runs an LLM the kernel reclaims the classifier first.
 
 Setting `ET_SERVER_XNNPACK_WEIGHT_CACHE=0` turns off the in-memory weight sharing. It exists to

@@ -85,7 +85,10 @@ target_include_directories(et-server PRIVATE
   "${EXECUTORCH_BUILD}/include"
   "${EXECUTORCH_SRC}/backends/xnnpack/third-party/pthreadpool/include"
   "${TOKENIZERS_CPP_SRC}/include")
-target_link_options(et-server PRIVATE -Wl,--gc-sections)
+# musl's default thread stack is 128 KiB; it takes the PT_GNU_STACK size as the
+# default instead. The httplib workers run the Rust tokenizer (including the
+# onig regex of byte-level tokenizers) and their share of XNNPACK execute.
+target_link_options(et-server PRIVATE -Wl,--gc-sections -Wl,-z,stack-size=1048576)
 target_link_libraries(et-server PRIVATE
   httplib::httplib nlohmann_json::nlohmann_json
   ${_whole}

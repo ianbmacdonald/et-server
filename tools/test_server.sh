@@ -47,6 +47,40 @@ mem() {  # mem <pid>
   echo "majflt $(awk '{print $12}' "/proc/$1/stat")"
 }
 
+expect_fail() {  # expect_fail <name> <stderr-pattern> <model-dir> [args...]
+  local name=$1 pat=$2 dir=$3
+  shift 3
+  "$RUN" --model-path "$dir" --port "${EF_PORT:-$((PORT + 2))}" "$@" >"$WORK/f.out" 2>"$WORK/f.err" &
+  local pid=$! rc
+  for _ in $(seq 1 300); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid"; wait "$pid" 2>/dev/null
+    fail "$name: still running"
+    return
+  fi
+  wait "$pid"; rc=$?
+  local lines
+  lines=$(wc -l <"$WORK/f.err")
+  if [ "$rc" = 1 ] && [ "$lines" = 1 ] && grep -q "^et-server: .*$pat" "$WORK/f.err"; then
+    pass "$name: $(cat "$WORK/f.err")"
+  else
+    fail "$name: rc=$rc lines=$lines $(head -c 400 "$WORK/f.err")"
+  fi
+}
+variant() {  # variant <name>: a copy of the model dir with symlinked files
+  local d=$WORK/m-$1
+  mkdir -p "$d"
+  for f in "$MODEL"/*; do ln -s "$f" "$d/"; done
+  echo "$d"
+}
+# nomanifest <name>: a variant with no manifest.json and no problem_type in config.json.
+nomanifest() {  # nomanifest <name>
+  local d
+  d=$(variant "$1"); rm "$d/manifest.json" "$d/config.json"
+  python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); c.pop("problem_type", None); json.dump(c, open(sys.argv[2],"w"))' \
+    "$MODEL/config.json" "$d/config.json"
+  echo "$d"
+}
 # --- all methods ---------------------------------------------------------------------------
 P=$PORT
 if start "$P" "$WORK/all.log" --verbose; then
@@ -54,13 +88,16 @@ if start "$P" "$WORK/all.log" --verbose; then
   [ "$h" = '{"engine":"executorch","status":"ok"}' ] && pass "health $h" || fail "health $h"
   echo "     memory (all methods): $(mem "$SPID")"
 
-  # Method routing: N words tokenize to N+2 ids ([CLS] ... [SEP]).
+  # Method routing: N words tokenize to N+2 ids ([CLS] ... [SEP]); 600 ids truncate to 512 and
+  # keep the trailing [SEP] (id 102 in the BERT uncased vocabulary).
   for spec in 18:64 98:128 198:256 598:512; do
     n=${spec%%:*}; want=seq_${spec##*:}
     before=$(wc -l <"$WORK/all.log")
     out=$(classify "$P" "$(words "$n")")
     line=$(tail -n +"$((before + 1))" "$WORK/all.log" | grep -- '->' | tail -1)
-    if echo "$out" | grep -q '"labels"' && echo "$line" | grep -q -- "-> $want\$"; then
+    ok=1
+    [ "$n" = 598 ] && { echo "$line" | grep -q -- ' 512 tokens (last id 102) ' || ok=0; }
+    if [ "$ok" = 1 ] && echo "$out" | grep -q '"labels"' && echo "$line" | grep -q -- "-> $want\$"; then
       pass "route $((n + 2)) tokens: $line"
     else
       fail "route $((n + 2)) tokens (want $want): $line $out"
@@ -71,18 +108,37 @@ if start "$P" "$WORK/all.log" --verbose; then
   printf '{"input": ' >"$WORK/badjson"
   printf '{"top_k": 1}' >"$WORK/noinput"
   printf '{"input": 42}' >"$WORK/nonstring"
-  for f in badjson noinput nonstring; do
+  printf '{"input": "\xff"}' >"$WORK/badutf8"
+  for f in badjson noinput nonstring badutf8; do
     c=$(code "$P" "$WORK/$f")
     [ "$c" = 400 ] && pass "$f -> $c" || fail "$f -> $c (want 400)"
   done
   python3 -c 'import json; print(json.dumps({"input": "a" * (1 << 20)}))' >"$WORK/big"
   c=$(code "$P" "$WORK/big")
   [ "$c" = 413 ] && pass "1 MiB body -> $c" || fail "1 MiB body -> $c (want 413)"
+  c=$(code "$P" "$WORK/badutf8")
+  body=$(curl -s -H 'Content-Type: application/json' -XPOST "http://127.0.0.1:$P/classify" --data-binary @"$WORK/badutf8")
+  echo "$body" | python3 -c 'import json,sys; assert "error" in json.load(sys.stdin)' 2>/dev/null &&
+    pass "invalid UTF-8 body gives a JSON error body: $body" || fail "invalid UTF-8 error body: $body"
   python3 -c 'import json; print(json.dumps({"input": ("phishing é " * 6000).encode()[:60000].decode(errors="ignore")}, ensure_ascii=False))' >"$WORK/60k"
   t0=$(date +%s%N); c=$(code "$P" "$WORK/60k"); t1=$(date +%s%N)
   ms=$(((t1 - t0) / 1000000))
-  [ "$c" = 200 ] && [ "$ms" -lt 5000 ] && pass "60 KB text pre-clipped -> $c in $ms ms" ||
+  [ "$c" = 200 ] && [ "$ms" -lt 5000 ] && pass "60 KB text tokenized whole -> $c in $ms ms" ||
     fail "60 KB text -> $c in $ms ms"
+
+  # Padding the tokenizer discards must not push content out of view: the padded text must score
+  # exactly like the unpadded text.
+  PH="Your account has been suspended. Verify your password now at http://secure-login.example.com/verify"
+  plain=$(classify "$P" "$PH")
+  for pad in space:20000 zwsp:8000 nl:30000; do
+    kind=${pad%%:*}; count=${pad##*:}
+    padded=$(python3 -c 'import sys
+ch = {"space": " ", "zwsp": "\u200b", "nl": "\n"}[sys.argv[1]]
+print(ch * int(sys.argv[2]) + sys.argv[3], end="")' "$kind" "$count" "$PH")
+    got=$(classify "$P" "$padded")
+    [ -n "$plain" ] && [ "$got" = "$plain" ] && pass "padding $kind x $count scores as unpadded: $got" ||
+      fail "padding $kind x $count: $got vs unpadded $plain"
+  done
 
   # Concurrency: parallel mixed-length requests must equal the serial answers exactly.
   texts=("$(words 10)" "$(words 100)" "$(words 250)" "$(words 700)")
@@ -106,6 +162,10 @@ if start "$P" "$WORK/all.log" --verbose; then
   [ "$bad" = 0 ] && pass "concurrency: 3 x $CONC parallel mixed-length requests equal serial bit for bit" ||
     fail "concurrency: $bad of $((3 * CONC)) parallel responses differ from serial"
   echo "     memory after requests: $(mem "$SPID")"
+  EF_PORT=$P expect_fail "second instance on a live port" "failed to bind 127.0.0.1:$P" "$MODEL"
+  h=$(curl -s "http://127.0.0.1:$P/health")
+  [ "$h" = '{"engine":"executorch","status":"ok"}' ] && pass "first instance still serves after the collision" ||
+    fail "first instance after collision: $h"
   stop
 else
   fail "server did not start: $(cat "$WORK/all.log")"
@@ -125,33 +185,34 @@ else
   fail "server with --seq-lens did not start: $(cat "$WORK/sub.log")"
 fi
 
+# --- startup messages on success ---------------------------------------------------------------
+P=$((PORT + 3))
+if start "$P" "$WORK/wc.log" --weight-cache "$WORK/cache.bin"; then
+  grep -q '^et-server: --weight-cache .* accepted; the on-disk cache is not used in v0.1.0$' "$WORK/wc.log" &&
+    pass "--weight-cache without --verbose: $(cat "$WORK/wc.log")" || fail "--weight-cache message: $(cat "$WORK/wc.log")"
+  stop
+else
+  fail "server with --weight-cache did not start: $(cat "$WORK/wc.log")"
+fi
+d=$(nomanifest noptype-ok)
+MODEL_SAVE=$MODEL; MODEL=$d
+if start "$P" "$WORK/np.log"; then
+  grep -q '^et-server: config.json declares no problem_type' "$WORK/np.log" &&
+    pass "no problem_type warns after a successful start: $(cat "$WORK/np.log")" || fail "no problem_type warning: $(cat "$WORK/np.log")"
+  stop
+else
+  fail "manifest-less server did not start: $(cat "$WORK/np.log")"
+fi
+MODEL=$MODEL_SAVE
+if start "$P" "$WORK/stack.log" --verbose; then
+  line=$(grep 'default thread stack' "$WORK/stack.log")
+  echo "$line" | grep -q 'stack 1024 KiB$' && pass "thread stack: $line" || fail "thread stack: $line"
+  stop
+else
+  fail "server did not start: $(cat "$WORK/stack.log")"
+fi
+
 # --- startup failures: one "et-server:" line on stderr, exit 1 --------------------------------
-expect_fail() {  # expect_fail <name> <stderr-pattern> <model-dir> [args...]
-  local name=$1 pat=$2 dir=$3
-  shift 3
-  "$RUN" --model-path "$dir" --port $((PORT + 2)) "$@" >"$WORK/f.out" 2>"$WORK/f.err" &
-  local pid=$! rc
-  for _ in $(seq 1 300); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid"; wait "$pid" 2>/dev/null
-    fail "$name: still running"
-    return
-  fi
-  wait "$pid"; rc=$?
-  local lines
-  lines=$(wc -l <"$WORK/f.err")
-  if [ "$rc" = 1 ] && [ "$lines" = 1 ] && grep -q "^et-server: .*$pat" "$WORK/f.err"; then
-    pass "$name: $(cat "$WORK/f.err")"
-  else
-    fail "$name: rc=$rc lines=$lines $(head -c 400 "$WORK/f.err")"
-  fi
-}
-variant() {  # variant <name>: a copy of the model dir with symlinked files
-  local d=$WORK/m-$1
-  mkdir -p "$d"
-  for f in "$MODEL"/*; do ln -s "$f" "$d/"; done
-  echo "$d"
-}
 d=$(variant nopte); rm "$d/model.pte"; expect_fail "missing model.pte" "model.pte not found" "$d"
 d=$(variant corruptpte); rm "$d/model.pte"; head -c 4096 /dev/urandom >"$d/model.pte"; expect_fail "corrupt model.pte" "cannot load" "$d"
 d=$(variant trunctok); rm "$d/tokenizer.json"; head -c 1000 "$MODEL/tokenizer.json" >"$d/tokenizer.json"
@@ -163,6 +224,14 @@ python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); c["model_type"]="xl
 expect_fail "model_type xlnet" "unsupported model_type .xlnet" "$d"
 expect_fail "--weight-cache of 255 bytes" "weight-cache path is 255 bytes" "$MODEL" --weight-cache "/$(python3 -c 'print("c" * 254)')"
 d=$(variant missinglen); expect_fail "--seq-lens 64,100" "does not have" "$d" --seq-lens 64,100
+expect_fail "unknown flag" "unknown argument '--weigth-cache'" "$MODEL" --weigth-cache /tmp/x
+expect_fail "--port abc" "--port expects an integer in 1..65535, got 'abc'" "$MODEL" --port abc
+expect_fail "--port 70000" "--port expects an integer in 1..65535, got '70000'" "$MODEL" --port 70000
+expect_fail "--threads -1" "--threads expects an integer in 1..1024, got '-1'" "$MODEL" --threads -1
+expect_fail "--threads missing value" "--threads needs a value" "$MODEL" --threads
+# No manifest.json and no problem_type: the softmax warning must not join a startup failure's line.
+d=$(nomanifest noptype-bad); rm "$d/model.pte"; head -c 4096 /dev/urandom >"$d/model.pte"
+expect_fail "no problem_type + corrupt model.pte" "cannot load" "$d"
 if [ -n "$BAD" ]; then
   for v in int32_input three_inputs rank3_output; do
     d=$(variant "$v"); rm "$d/model.pte"; ln -s "$BAD/$v.pte" "$d/model.pte"

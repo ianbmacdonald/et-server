@@ -37,6 +37,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <pthread.h>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -57,11 +58,11 @@ namespace {
 // ExecuTorch stores string backend options in a 256-byte array and silently
 // truncates longer values, so a cache path near that long would name another file.
 constexpr size_t kMaxWeightCachePath = executorch::runtime::kMaxOptionValueLength - 2;
+// Bounds the tokenizer's work per request. The whole body is tokenized: a
+// byte-level pre-clip would drop text that padding the normalizer discards
+// (whitespace, zero-width characters) pushed past the clip, hiding it from the
+// classifier even though it falls inside the token window.
 constexpr size_t kPayloadMax = 64 * 1024;
-// Bytes of text kept per token of budget before tokenizing. Real text runs 3-6
-// bytes per WordPiece token, so the clip never changes the tokens that survive
-// truncation; it only bounds the tokenizer's work on an oversized request.
-constexpr size_t kClipBytesPerToken = 32;
 constexpr int kOomScoreAdj = 500;
 
 bool g_verbose = false;
@@ -74,15 +75,14 @@ void emit_et_log(et_timestamp_t, et_pal_log_level_t level, const char*, const ch
     fprintf(stderr, "et-server: [executorch %c] %.*s\n", static_cast<char>(level), static_cast<int>(length), message);
 }
 
-struct InvalidInput : std::runtime_error {
-    using std::runtime_error::runtime_error;
-};
-
 struct Manifest {
     std::string task;
     std::vector<std::string> id2label;
     std::string score_normalization = "softmax";
     int max_length = 512;
+    // Printed only after a successful start, which must otherwise stay silent
+    // on success and print exactly one line on failure.
+    std::string deferred_warning;
 };
 
 struct Args {
@@ -117,22 +117,45 @@ std::vector<int> parse_seq_lens(const std::string& s) {
     return out;
 }
 
+constexpr const char* kUsage =
+    "usage: et-server --model-path <dir> --port <n> [--threads N] [--weight-cache FILE] "
+    "[--seq-lens 64,512] [--verbose]";
+
+int parse_int_flag(const std::string& flag, const std::string& value, int lo, int hi) {
+    size_t pos = 0;
+    long long n = 0;
+    try {
+        n = std::stoll(value, &pos);
+    } catch (const std::exception&) {
+        pos = 0;
+    }
+    if (pos == 0 || pos != value.size() || n < lo || n > hi) {
+        throw std::runtime_error(flag + " expects an integer in " + std::to_string(lo) + ".." + std::to_string(hi) +
+                                 ", got '" + value + "'");
+    }
+    return static_cast<int>(n);
+}
+
 Args parse_args(int argc, char** argv) {
     Args a;
     for (int i = 1; i < argc; ++i) {
-        std::string f = argv[i];
-        if (f == "--model-path" && i + 1 < argc) a.model_path = argv[++i];
-        else if (f == "--port" && i + 1 < argc) a.port = std::stoi(argv[++i]);
-        else if (f == "--threads" && i + 1 < argc) a.threads = std::stoi(argv[++i]);
-        else if (f == "--weight-cache" && i + 1 < argc) a.weight_cache = argv[++i];
-        else if (f == "--seq-lens" && i + 1 < argc) a.seq_lens = parse_seq_lens(argv[++i]);
-        else if (f == "--verbose") a.verbose = true;
+        const std::string f = argv[i];
+        if (f == "--verbose") {
+            a.verbose = true;
+            continue;
+        }
+        if (f != "--model-path" && f != "--port" && f != "--threads" && f != "--weight-cache" && f != "--seq-lens") {
+            throw std::runtime_error("unknown argument '" + f + "'; " + kUsage);
+        }
+        if (i + 1 >= argc) throw std::runtime_error(f + " needs a value; " + kUsage);
+        const std::string v = argv[++i];
+        if (f == "--model-path") a.model_path = v;
+        else if (f == "--port") a.port = parse_int_flag(f, v, 1, 65535);
+        else if (f == "--threads") a.threads = parse_int_flag(f, v, 1, 1024);
+        else if (f == "--weight-cache") a.weight_cache = v;
+        else a.seq_lens = parse_seq_lens(v);
     }
-    if (a.model_path.empty() || a.port == 0) {
-        throw std::runtime_error(
-            "usage: et-server --model-path <dir> --port <n> [--threads N] [--weight-cache FILE] "
-            "[--seq-lens 64,512] [--verbose]");
-    }
+    if (a.model_path.empty() || a.port == 0) throw std::runtime_error(kUsage);
     if (a.weight_cache.size() > kMaxWeightCachePath) {
         throw std::runtime_error("--weight-cache path is " + std::to_string(a.weight_cache.size()) +
                                  " bytes; it must be at most " + std::to_string(kMaxWeightCachePath) +
@@ -316,9 +339,9 @@ Manifest manifest_from_hf_config(const fs::path& dir) {
     if (problem_type == "multi_label_classification") {
         m.score_normalization = "sigmoid";
     } else if (problem_type.empty()) {
-        fprintf(stderr,
-                "et-server: config.json declares no problem_type; assuming SINGLE-LABEL softmax. "
-                "A multi-label model needs a manifest.json with \"score_normalization\": \"sigmoid\".\n");
+        m.deferred_warning =
+            "config.json declares no problem_type; assuming SINGLE-LABEL softmax. "
+            "A multi-label model needs a manifest.json with \"score_normalization\": \"sigmoid\".";
     }
     parse_id2label(j.at("id2label"), m, "config.json");
     if (m.id2label.size() < 2) throw std::runtime_error("single-output heads have no label scores in [0,1]");
@@ -350,12 +373,21 @@ std::string load_bytes(const fs::path& p) {
     return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 
-// Cut at most max_bytes, backing off so a multi-byte UTF-8 sequence is not split.
-std::string clip_utf8(const std::string& s, size_t max_bytes) {
-    if (s.size() <= max_bytes) return s;
-    size_t cut = max_bytes;
-    while (cut > 0 && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) --cut;
-    return s.substr(0, cut);
+// Error text can echo raw request bytes (nlohmann's parse errors quote the
+// input), and the default strict dump() throws on invalid UTF-8 inside the
+// handler, which turns a 400 into httplib's 500.
+std::string error_body(const std::string& message) {
+    return json{{"error", message}}.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+size_t default_thread_stack_kib() {
+    pthread_attr_t attr;
+    size_t size = 0;
+    if (pthread_attr_init(&attr) == 0) {
+        pthread_attr_getstacksize(&attr, &size);
+        pthread_attr_destroy(&attr);
+    }
+    return size / 1024;
 }
 
 std::string error_name(Error e) {
@@ -401,7 +433,7 @@ public:
         if (!fs::exists(pte)) throw std::runtime_error("model.pte not found in " + dir.string());
 
         int threads = args.threads;
-        if (threads <= 0) threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+        if (threads == 0) threads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
         executorch::extension::threadpool::get_threadpool()->_unsafe_reset_threadpool(
             static_cast<uint32_t>(threads));
 
@@ -464,7 +496,9 @@ public:
         }
 
         // Warm every method once so the first request pays no first-run cost.
-        for (auto& m : methods_) run(m, {101, 102});
+        const std::vector<int64_t> warm_ids = encode("");
+        if (warm_ids.empty()) throw std::runtime_error("tokenizer.json encodes the empty string to no tokens");
+        for (auto& m : methods_) run(m, warm_ids);
         load_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 
         if (verbose_) {
@@ -475,10 +509,14 @@ public:
                     "max_length %d, loaded+warmed in %.0f ms\n",
                     methods_.size(), lens.c_str(), threads, weight_cache ? "on" : "off", manifest_.max_length,
                     load_ms_);
-            if (!args.weight_cache.empty()) {
-                fprintf(stderr, "et-server: --weight-cache %s accepted; the on-disk cache is not used in v0.1.0\n",
-                        args.weight_cache.c_str());
-            }
+            fprintf(stderr, "et-server: default thread stack %zu KiB\n", default_thread_stack_kib());
+        }
+        if (!args.weight_cache.empty()) {
+            fprintf(stderr, "et-server: --weight-cache %s accepted; the on-disk cache is not used in v0.1.0\n",
+                    args.weight_cache.c_str());
+        }
+        if (!manifest_.deferred_warning.empty()) {
+            fprintf(stderr, "et-server: %s\n", manifest_.deferred_warning.c_str());
         }
     }
 
@@ -488,20 +526,9 @@ public:
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
 
-    json classify(const std::string& raw_text, int top_k) {
+    json classify(const std::string& text, int top_k) {
         const size_t max_len = static_cast<size_t>(manifest_.max_length);
-        const std::string text = clip_utf8(raw_text, max_len * kClipBytesPerToken);
-        std::vector<int64_t> input_ids;
-        {
-            std::lock_guard<std::mutex> lock(tokenizer_mutex_);
-            TokenizerEncodeResult result;
-            tokenizers_encode(tokenizer_, text.data(), text.size(), /*add_special_token=*/1, &result);
-            input_ids.assign(result.token_ids, result.token_ids + result.len);
-            tokenizers_free_encode_results(&result, 1);
-        }
-        if (pad_id_ >= 0) {
-            while (input_ids.size() > 1 && input_ids.back() == pad_id_) input_ids.pop_back();
-        }
+        std::vector<int64_t> input_ids = encode(text);
         if (input_ids.empty()) throw std::runtime_error("empty tokenization");
         // Keep the trailing token ([SEP] / </s>) so the sequence stays well-formed.
         if (input_ids.size() > max_len) {
@@ -514,7 +541,10 @@ public:
         for (auto& candidate : methods_) {
             if (candidate.len >= input_ids.size()) { m = &candidate; break; }
         }
-        if (verbose_) fprintf(stderr, "et-server: %zu tokens -> %s\n", input_ids.size(), m->name.c_str());
+        if (verbose_) {
+            fprintf(stderr, "et-server: %zu tokens (last id %lld) -> %s\n", input_ids.size(),
+                    static_cast<long long>(input_ids.back()), m->name.c_str());
+        }
         const std::vector<float> logits = run(*m, input_ids);
 
         auto p = normalize(logits.data(), logits.size(), manifest_.score_normalization);
@@ -528,6 +558,21 @@ public:
     }
 
 private:
+    std::vector<int64_t> encode(const std::string& text) {
+        std::vector<int64_t> ids;
+        {
+            std::lock_guard<std::mutex> lock(tokenizer_mutex_);
+            TokenizerEncodeResult result;
+            tokenizers_encode(tokenizer_, text.data(), text.size(), /*add_special_token=*/1, &result);
+            ids.assign(result.token_ids, result.token_ids + result.len);
+            tokenizers_free_encode_results(&result, 1);
+        }
+        if (pad_id_ >= 0) {
+            while (ids.size() > 1 && ids.back() == pad_id_) ids.pop_back();
+        }
+        return ids;
+    }
+
     struct Method {
         std::string name;
         size_t len = 0;
@@ -623,6 +668,12 @@ int main(int argc, char** argv) {
         Model model(args.model_path, args);
 
         httplib::Server srv;
+        // httplib's default sets SO_REUSEPORT on Linux, which lets a second
+        // instance share a live port and receive part of its traffic.
+        srv.set_socket_options([](socket_t sock) {
+            int one = 1;
+            setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        });
         srv.set_payload_max_length(kPayloadMax);
         srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
             res.set_content(json{{"status", "ok"}, {"engine", "executorch"}}.dump(), "application/json");
@@ -637,17 +688,14 @@ int main(int argc, char** argv) {
                 top_k = body.value("top_k", 0);
             } catch (const std::exception& e) {
                 res.status = 400;
-                res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+                res.set_content(error_body(e.what()), "application/json");
                 return;
             }
             try {
                 res.set_content(model.classify(text, top_k).dump(), "application/json");
-            } catch (const InvalidInput& e) {
-                res.status = 400;
-                res.set_content(json{{"error", e.what()}}.dump(), "application/json");
             } catch (const std::exception& e) {
                 res.status = 500;
-                res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+                res.set_content(error_body(e.what()), "application/json");
             }
         });
 

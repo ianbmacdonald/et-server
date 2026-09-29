@@ -26,8 +26,24 @@ cp "$ET/third-party/flatbuffers/LICENSE" "$B/licenses/flatbuffers-LICENSE"
 cp "$R/tokenizers-cpp/LICENSE" "$B/licenses/tokenizers-cpp-LICENSE"
 cp "$BLD/_deps/httplib-src/LICENSE" "$B/licenses/cpp-httplib-LICENSE"
 cp "$BLD/_deps/json-src/LICENSE.MIT" "$B/licenses/nlohmann-json-LICENSE"
-ONIG=$(find "$HOME/.cargo/registry/src" -maxdepth 4 -path '*onig_sys*' -name COPYING | head -1)
-[ -n "$ONIG" ] && cp "$ONIG" "$B/licenses/oniguruma-COPYING"
+# The crates linked into libtokenizers_c.a, at the versions its Cargo.lock pins.
+crate_dir() {  # crate_dir <name>
+  local ver
+  ver=$(awk -v n="$1" '$0 == "name = \"" n "\"" {getline; gsub(/version = |"/, ""); print; exit}' \
+    "$R/tokenizers-cpp/rust/Cargo.lock")
+  [ -n "$ver" ] || { echo "crate $1 is not in $R/tokenizers-cpp/rust/Cargo.lock" >&2; exit 1; }
+  local d
+  d=$(find "$HOME/.cargo/registry/src" -mindepth 2 -maxdepth 2 -type d -name "$1-$ver" -print -quit)
+  [ -n "$d" ] || { echo "crate $1-$ver is not in the cargo registry" >&2; exit 1; }
+  echo "$d"
+}
+need() {  # need <src> <dest-name>: licence texts are not optional
+  [ -f "$1" ] || { echo "missing licence text $1" >&2; exit 1; }
+  cp "$1" "$B/licenses/$2"
+}
+need "$(crate_dir onig_sys)/oniguruma/COPYING" oniguruma-COPYING
+need "$(crate_dir onig)/LICENSE.md" rust-onig-LICENSE.md
+need "$(crate_dir tokenizers)/LICENSE" huggingface-tokenizers-LICENSE
 ( cd "$R/tokenizers-cpp/rust" && "$HOME/.cargo/bin/cargo" metadata --format-version 1 \
     --filter-platform x86_64-unknown-linux-musl 2>/dev/null ) | python3 -c '
 import json, sys
