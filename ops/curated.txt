@@ -1,0 +1,31 @@
+# et-server curated operator set (the default for the musl releases): the union of the operators
+# ExecuTorch's gen_oplist finds outside the XNNPACK delegate in every .pte of the six use cases of the
+# prplOS engine study (text classification, sentence embeddings, image classification, object detection,
+# audio, time series; 16 models). It covers the DistilBERT text export and the MobileNetV2 image export
+# (fully delegated: no portable operator). One operator per line; ExecuTorch picks the optimized kernel
+# where one exists, else the portable one (configurations/merged.yaml), as the all-kernels build does.
+aten::_softmax.out
+aten::alias_copy.out
+aten::any.out
+aten::arange.start_out
+aten::cat.out
+aten::embedding.out
+aten::eq.Scalar_out
+aten::expand_copy.out
+aten::full.out
+aten::full_like.out
+aten::logical_not.out
+aten::mean.out
+aten::mul.Scalar_out
+aten::native_layer_norm.out
+aten::pow.Tensor_Scalar_out
+aten::scalar_tensor.out
+aten::select_copy.int_out
+aten::slice_copy.Tensor_out
+aten::split_with_sizes_copy.out
+aten::squeeze_copy.dims_out
+aten::sum.IntList_out
+aten::unsqueeze_copy.out
+aten::upsample_nearest2d.vec_out
+aten::where.self_out
+dim_order_ops::_to_dim_order_copy.out

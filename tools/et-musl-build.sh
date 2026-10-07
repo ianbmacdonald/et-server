@@ -28,6 +28,11 @@ WEIGHT_CACHE=${WEIGHT_CACHE:-OFF}
 # operators that model's non-delegated graph calls; ET_SELECT_OPS_LIST="aten::add.out,..." an explicit
 # list. Either adds libexecutorch_selected_kernels.a to the tree; build et-server with
 # ET_SERVER_KERNELS_LIB=$B/libexecutorch_selected_kernels.a. Unset: every optimized+portable kernel.
+# ET_SELECT_OPS_FILE=<file>: the same list, one operator per line (ops/curated.txt).
+if [ -n "${ET_SELECT_OPS_FILE:-}" ]; then
+  [ -z "${ET_SELECT_OPS_LIST:-}" ] || { echo "set ET_SELECT_OPS_FILE or ET_SELECT_OPS_LIST, not both" >&2; exit 1; }
+  ET_SELECT_OPS_LIST=$(grep -v '^#' "$ET_SELECT_OPS_FILE" | tr -d ' \t' | grep . | paste -sd, -)
+fi
 SELECT=()
 [ -n "${ET_SELECT_OPS_MODEL:-}" ] && SELECT+=(-DEXECUTORCH_SELECT_OPS_MODEL="$(readlink -f "$ET_SELECT_OPS_MODEL")")
 [ -n "${ET_SELECT_OPS_LIST:-}" ] && SELECT+=(-DEXECUTORCH_SELECT_OPS_LIST="$ET_SELECT_OPS_LIST")
