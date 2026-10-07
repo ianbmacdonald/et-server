@@ -29,6 +29,11 @@ FetchContent_Declare(json
 FetchContent_MakeAvailable(httplib json)
 
 set(B "${EXECUTORCH_BUILD}")
+# The operator registration library: every optimized+portable kernel by default. An ExecuTorch tree
+# configured for selective build (-DEXECUTORCH_SELECT_OPS_MODEL=<model.pte>, _LIST or _YAML) also builds
+# libexecutorch_selected_kernels.a, which registers only the selected operators; pass that here.
+set(ET_SERVER_KERNELS_LIB "${B}/configurations/liboptimized_native_cpu_ops_lib.a" CACHE FILEPATH
+  "ExecuTorch operator registration archive (linked whole-archive)")
 # Archives whose objects register themselves from static initializers (the prim
 # ops, the XNNPACK backend, the optimized CPU kernels): nothing references them
 # by symbol, so without --whole-archive the linker drops them and load_method
@@ -38,7 +43,7 @@ set(B "${EXECUTORCH_BUILD}")
 set(ET_WHOLE_ARCHIVES
   "${B}/libexecutorch.a"
   "${B}/backends/xnnpack/libxnnpack_backend.a"
-  "${B}/configurations/liboptimized_native_cpu_ops_lib.a")
+  "${ET_SERVER_KERNELS_LIB}")
 set(ET_ARCHIVES
   "${B}/extension/module/libextension_module_static.a"
   "${B}/extension/data_loader/libextension_data_loader.a"
@@ -46,7 +51,7 @@ set(ET_ARCHIVES
   "${B}/extension/named_data_map/libextension_named_data_map.a"
   "${B}/extension/tensor/libextension_tensor.a"
   "${B}/libexecutorch.a"
-  "${B}/configurations/liboptimized_native_cpu_ops_lib.a"
+  "${ET_SERVER_KERNELS_LIB}"
   "${B}/kernels/optimized/liboptimized_kernels.a"
   "${B}/kernels/portable/liboptimized_portable_kernels.a"
   "${B}/kernels/portable/cpu/util/libkernels_util_all_deps.a"
@@ -95,3 +100,18 @@ target_link_libraries(et-server PRIVATE
   -Wl,--start-group ${ET_ARCHIVES} -Wl,--end-group
   "${TOKENIZERS_C_LIB}"
   ${CMAKE_DL_LIBS} pthread m)
+
+option(ET_SERVER_BUILD_ET_RUN "Also build tools/et-run (runs a .pte method on a raw float32 input)" OFF)
+if(ET_SERVER_BUILD_ET_RUN)
+  add_executable(et-run tools/et-run/et_run.cpp)
+  get_target_property(_defs et-server COMPILE_DEFINITIONS)
+  get_target_property(_incs et-server INCLUDE_DIRECTORIES)
+  get_target_property(_opts et-server COMPILE_OPTIONS)
+  get_target_property(_lopts et-server LINK_OPTIONS)
+  target_compile_definitions(et-run PRIVATE ${_defs})
+  target_include_directories(et-run PRIVATE ${_incs})
+  target_compile_options(et-run PRIVATE ${_opts})
+  target_link_options(et-run PRIVATE ${_lopts})
+  target_link_libraries(et-run PRIVATE ${_whole} -Wl,--start-group ${ET_ARCHIVES} -Wl,--end-group
+    ${CMAKE_DL_LIBS} pthread m)
+endif()
