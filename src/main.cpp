@@ -544,7 +544,7 @@ public:
             fprintf(stderr, "et-server: default thread stack %zu KiB\n", default_thread_stack_kib());
         }
         if (!args.weight_cache.empty()) {
-            fprintf(stderr, "et-server: --weight-cache %s accepted; the on-disk cache is not used in v0.1.0\n",
+            fprintf(stderr, "et-server: --weight-cache %s accepted; the on-disk cache is not used\n",
                     args.weight_cache.c_str());
         }
         if (!manifest_.deferred_warning.empty()) {
@@ -614,14 +614,14 @@ private:
         TensorPtr mask_t;
     };
 
-    // v0.1.0 serves exactly the exporter's layout; anything else is refused at
+    // The text path serves exactly the exporter's layout; anything else is refused at
     // startup rather than fed wrong-typed buffers at request time.
     void validate_method(const std::string& name, size_t len) {
         auto meta = module_->method_meta(name);
         if (!meta.ok()) throw std::runtime_error("cannot read the metadata of method " + name);
         auto fail = [&](const std::string& why) {
             throw std::runtime_error("method " + name + ": " + why +
-                                     " (v0.1.0 expects inputs input_ids, attention_mask as int64 [1," +
+                                     " (the text path expects inputs input_ids, attention_mask as int64 [1," +
                                      std::to_string(len) + "] and output 0 as float32 [1," +
                                      std::to_string(manifest_.id2label.size()) + "])");
         };

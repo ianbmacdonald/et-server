@@ -1,4 +1,4 @@
-"""Write tiny .pte programs whose seq_64 method breaks et-server's v0.1.0 input/output contract.
+"""Write tiny .pte programs whose seq_64 method breaks et-server's text-model input/output contract.
 
     python make_bad_pte.py <out_dir>
 

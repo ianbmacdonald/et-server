@@ -188,7 +188,7 @@ fi
 # --- startup messages on success ---------------------------------------------------------------
 P=$((PORT + 3))
 if start "$P" "$WORK/wc.log" --weight-cache "$WORK/cache.bin"; then
-  grep -q '^et-server: --weight-cache .* accepted; the on-disk cache is not used in v0.1.0$' "$WORK/wc.log" &&
+  grep -q '^et-server: --weight-cache .* accepted; the on-disk cache is not used$' "$WORK/wc.log" &&
     pass "--weight-cache without --verbose: $(cat "$WORK/wc.log")" || fail "--weight-cache message: $(cat "$WORK/wc.log")"
   stop
 else
