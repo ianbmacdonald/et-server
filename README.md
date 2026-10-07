@@ -103,7 +103,7 @@ On the ai4 build host layout (`~/build-litert`):
 ```bash
 tools/et-musl-build.sh     # ExecuTorch v1.5.1 static libraries, once; checks the checkout is v1.5.1
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh
-./package-release.sh v0.2.0
+./package-release.sh v0.2.0 [x86_64|aarch64]   # BLD, EXECUTORCH_SRC, EXECUTORCH_BUILD select the trees
 ```
 
 Curated (release default) or general build. The releases link a selective ExecuTorch tree that
