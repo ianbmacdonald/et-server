@@ -74,7 +74,18 @@ foreach(a ${ET_WHOLE_ARCHIVES})
   list(APPEND _whole "-Wl,--whole-archive" "${a}" "-Wl,--no-whole-archive")
 endforeach()
 
-add_executable(et-server src/main.cpp)
+# Image decode, resize and manifest parsing (no ExecuTorch dependency); the same
+# sources as tflite-server's, with stb_image compiled once in stb_image_impl.cpp.
+add_library(et_image STATIC
+  src/flat_json.cpp
+  src/image_manifest.cpp
+  src/image_preprocess.cpp
+  src/stb_image_impl.cpp)
+target_include_directories(et_image PUBLIC src third_party/stb)
+target_link_libraries(et_image PUBLIC nlohmann_json::nlohmann_json)
+target_compile_options(et_image PRIVATE -ffunction-sections -fdata-sections)
+
+add_executable(et-server src/main.cpp src/image_model.cpp)
 # The patched c10 Macros.h picks musl's __assert_fail signature from
 # EXECUTORCH_LIBC_MUSL; every translation unit that reaches it through module.h
 # needs it. The ET_* values match the ExecuTorch tree's own compile lines, so
@@ -95,6 +106,7 @@ target_include_directories(et-server PRIVATE
 # onig regex of byte-level tokenizers) and their share of XNNPACK execute.
 target_link_options(et-server PRIVATE -Wl,--gc-sections -Wl,-z,stack-size=1048576)
 target_link_libraries(et-server PRIVATE
+  et_image
   httplib::httplib nlohmann_json::nlohmann_json
   ${_whole}
   -Wl,--start-group ${ET_ARCHIVES} -Wl,--end-group

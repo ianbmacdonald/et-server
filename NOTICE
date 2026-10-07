@@ -9,7 +9,9 @@ licensed under the Apache License, Version 2.0. The lineage is:
 
 The /classify contract, manifest handling, tokenizer handling and model-family allowlist in
 src/main.cpp come from ort-server's src/main.cpp by way of tflite-server; the inference engine
-was changed to an ExecuTorch Module with the XNNPACK delegate. build-prplos-x86_64.sh,
+was changed to an ExecuTorch Module with the XNNPACK delegate. The image-classification path
+(src/image_*, src/flat_json.*, src/counting_semaphore.h, src/errors.h, src/stb_image_impl.cpp and
+the /classify/image handler in src/main.cpp) comes from tflite-server. build-prplos-x86_64.sh,
 package-release.sh and tools/compare.py follow tflite-server's. tools/export_pte.py follows the
 export.py shipped in the lemonade-sdk *-ONNX classifier repositories.
 
@@ -26,3 +28,5 @@ It links:
   licenses/rust-crates.txt
 - cpp-httplib, MIT License
 - nlohmann/json, MIT License
+- stb_image (https://github.com/nothings/stb), public domain or MIT License, vendored
+  in third_party/stb

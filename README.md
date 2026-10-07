@@ -40,6 +40,25 @@ difference per method and fixture, the tool versions, the XNNPACK delegation cov
 constant layout. It also fails if the constants are not stored once, as named data: that is what
 lets the XNNPACK weight cache share one packed copy across all methods.
 
+## Image classification
+
+A model directory whose `manifest.json` says `"task": "image-classification"` is served on
+`POST /classify/image` instead, with tflite-server's contract, decoder (stb_image), Pillow-compatible
+resize and limits, so LiteRT, ONNX Runtime and ExecuTorch can be compared on the same model and
+images:
+
+```
+model-dir/
+  model.pte        # one method (forward): one float32 image input, one float32 probability output
+  labels.txt       # one label per output
+  manifest.json    # tflite-server's schema; a PyTorch export ([1, 3, H, W]) sets "preprocess": {"layout": "NCHW"}
+```
+
+The request and response shapes, the 400/413/503 rules and the image flags (`--max-image-bytes`,
+`--max-image-pixels`, `--max-concurrent-decodes`, `--decode-budget-factor`, `--max-decode-bytes`,
+`--http-threads`) are tflite-server's; out-of-range values fail at startup, as et-server's other flags
+do. `/classify` returns 400 on an image model, and `/classify/image` 400 on a text model.
+
 ## Run
 
 ```bash
@@ -100,6 +119,10 @@ tools/make_bad_pte.py <dir>                               # .pte files that brea
 tools/test_server.sh <launcher> <model-dir> [<dir>]       # health, routing, errors, concurrency, startup failures
 tools/compare.py ort=URL tflite=URL et=URL [--subset NAME] # score parity against the first server
 ```
+
+The image path is checked with tflite-server's own `tests/e2e_image_server.py <port> <grace_hopper.jpg>`
+(and `--pixel-cap-only` against a server started with `--max-image-pixels 1000`), run against et-server
+serving the MobileNetV2 `.pte` with `"layout": "NCHW"`.
 
 ## Measured
 

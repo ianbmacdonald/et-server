@@ -26,6 +26,7 @@ cp "$ET/third-party/flatbuffers/LICENSE" "$B/licenses/flatbuffers-LICENSE"
 cp "$R/tokenizers-cpp/LICENSE" "$B/licenses/tokenizers-cpp-LICENSE"
 cp "$BLD/_deps/httplib-src/LICENSE" "$B/licenses/cpp-httplib-LICENSE"
 cp "$BLD/_deps/json-src/LICENSE.MIT" "$B/licenses/nlohmann-json-LICENSE"
+cp "$SRC/third_party/stb/LICENSE" "$B/licenses/stb-LICENSE"
 # The crates linked into libtokenizers_c.a, at the versions its Cargo.lock pins.
 crate_dir() {  # crate_dir <name>
   local ver

@@ -1,0 +1,8 @@
+stb_image.h v2.30, vendored unmodified from https://github.com/nothings/stb
+
+  commit   013ac3beddff3dbffafd5177e7972067cd2b5083 (last change to stb_image.h, 2024-05-31)
+  sha256   594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3  stb_image.h
+  sha256   bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63  LICENSE
+
+License: public domain or MIT, at your choice (LICENSE). It is compiled once, in
+src/stb_image_impl.cpp, with only the JPEG and PNG loaders and a budgeted allocator.

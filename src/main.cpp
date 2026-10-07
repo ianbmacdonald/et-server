@@ -5,7 +5,10 @@
 // handling and model-family allowlist, with the inference engine replaced by an
 // ExecuTorch Module (XNNPACK delegate, optimized CPU kernels).
 //
-// The model is a .pte program with one method per fixed sequence length
+// A manifest.json with "task": "image-classification" selects the image path
+// instead (POST /classify/image, image_model.cpp, tflite-server's contract).
+//
+// The text model is a .pte program with one method per fixed sequence length
 // (seq_64, seq_128, ...). Each method takes input_ids and attention_mask as
 // int64 [1, L] and returns float logits [1, num_labels]. A request runs on the
 // smallest method that holds it, padded with a zero attention mask.
@@ -23,6 +26,12 @@
 // tokenizers-cpp's C API: the C++ wrapper hardcodes add_special_tokens=false,
 // but encoder classifiers need [CLS]/[SEP] to match the HuggingFace reference.
 #include "tokenizers_c.h"
+
+#include "counting_semaphore.h"
+#include "errors.h"
+#include "flat_json.h"
+#include "image_model.h"
+#include "image_preprocess.h"
 
 #include <algorithm>
 #include <chrono>
@@ -42,6 +51,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -64,6 +74,8 @@ constexpr size_t kMaxWeightCachePath = executorch::runtime::kMaxOptionValueLengt
 // classifier even though it falls inside the token window.
 constexpr size_t kPayloadMax = 64 * 1024;
 constexpr int kOomScoreAdj = 500;
+constexpr long long kMaxTopK = 1000000;
+constexpr auto kAdmissionWait = std::chrono::seconds(30);
 
 bool g_verbose = false;
 
@@ -92,6 +104,12 @@ struct Args {
     std::string weight_cache;
     std::vector<int> seq_lens;
     bool verbose = false;
+    uint64_t max_image_bytes = 16u << 20;
+    uint64_t max_image_pixels = 4000000;
+    uint64_t decode_budget_factor = 16;
+    uint64_t max_decode_bytes = 256u << 20;
+    int max_concurrent_decodes = 1;
+    int http_threads = 4;
 };
 
 std::vector<int> parse_seq_lens(const std::string& s) {
@@ -119,9 +137,10 @@ std::vector<int> parse_seq_lens(const std::string& s) {
 
 constexpr const char* kUsage =
     "usage: et-server --model-path <dir> --port <n> [--threads N] [--weight-cache FILE] "
-    "[--seq-lens 64,512] [--verbose]";
+    "[--seq-lens 64,512] [--verbose]; image models: [--max-image-bytes N] [--max-image-pixels N] "
+    "[--max-concurrent-decodes 1..2] [--decode-budget-factor N] [--max-decode-bytes N] [--http-threads 2..16]";
 
-int parse_int_flag(const std::string& flag, const std::string& value, int lo, int hi) {
+long long parse_range_flag(const std::string& flag, const std::string& value, long long lo, long long hi) {
     size_t pos = 0;
     long long n = 0;
     try {
@@ -133,7 +152,11 @@ int parse_int_flag(const std::string& flag, const std::string& value, int lo, in
         throw std::runtime_error(flag + " expects an integer in " + std::to_string(lo) + ".." + std::to_string(hi) +
                                  ", got '" + value + "'");
     }
-    return static_cast<int>(n);
+    return n;
+}
+
+int parse_int_flag(const std::string& flag, const std::string& value, int lo, int hi) {
+    return static_cast<int>(parse_range_flag(flag, value, lo, hi));
 }
 
 Args parse_args(int argc, char** argv) {
@@ -144,16 +167,24 @@ Args parse_args(int argc, char** argv) {
             a.verbose = true;
             continue;
         }
-        if (f != "--model-path" && f != "--port" && f != "--threads" && f != "--weight-cache" && f != "--seq-lens") {
-            throw std::runtime_error("unknown argument '" + f + "'; " + kUsage);
-        }
+        static const std::set<std::string> kValued = {
+            "--model-path", "--port", "--threads", "--weight-cache", "--seq-lens", "--max-image-bytes",
+            "--max-image-pixels", "--decode-budget-factor", "--max-decode-bytes", "--max-concurrent-decodes",
+            "--http-threads"};
+        if (!kValued.count(f)) throw std::runtime_error("unknown argument '" + f + "'; " + kUsage);
         if (i + 1 >= argc) throw std::runtime_error(f + " needs a value; " + kUsage);
         const std::string v = argv[++i];
         if (f == "--model-path") a.model_path = v;
         else if (f == "--port") a.port = parse_int_flag(f, v, 1, 65535);
         else if (f == "--threads") a.threads = parse_int_flag(f, v, 1, 1024);
         else if (f == "--weight-cache") a.weight_cache = v;
-        else a.seq_lens = parse_seq_lens(v);
+        else if (f == "--seq-lens") a.seq_lens = parse_seq_lens(v);
+        else if (f == "--max-image-bytes") a.max_image_bytes = parse_range_flag(f, v, 1024, 256ll << 20);
+        else if (f == "--max-image-pixels") a.max_image_pixels = parse_range_flag(f, v, 1, 16384ll * 16384);
+        else if (f == "--decode-budget-factor") a.decode_budget_factor = parse_range_flag(f, v, 4, 64);
+        else if (f == "--max-decode-bytes") a.max_decode_bytes = parse_range_flag(f, v, 16ll << 20, 4ll << 30);
+        else if (f == "--max-concurrent-decodes") a.max_concurrent_decodes = parse_int_flag(f, v, 1, 2);
+        else a.http_threads = parse_int_flag(f, v, 2, 16);
     }
     if (a.model_path.empty() || a.port == 0) throw std::runtime_error(kUsage);
     if (a.weight_cache.size() > kMaxWeightCachePath) {
@@ -657,6 +688,165 @@ private:
     double load_ms_ = 0;
 };
 
+// True when <dir>/manifest.json is a JSON object with "task":
+// "image-classification". Anything else, including an unreadable manifest, is
+// left to the text path, which reports its own errors.
+bool is_image_model(const fs::path& dir) {
+    std::ifstream f(dir / "manifest.json", std::ios::binary);
+    if (!f) return false;
+    json j;
+    try {
+        f >> j;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return j.is_object() && j.contains("task") && j["task"] == "image-classification";
+}
+
+void send_error(httplib::Response& res, int status, const std::string& message) {
+    res.status = status;
+    res.set_content(error_body(message), "application/json");
+}
+
+// top_k follows Lemonade's /v1/classify rule: an integer from 1 to 1,000,000.
+int top_k_from_json(const json& v) {
+    if (!v.is_number_integer() || v.get<long long>() < 1 || v.get<long long>() > kMaxTopK) {
+        throw InvalidInput("top_k must be an integer from 1 to 1000000");
+    }
+    return static_cast<int>(v.get<long long>());
+}
+
+int top_k_from_field(const std::string& s) {
+    if (s.empty() || s.size() > 7 || !std::all_of(s.begin(), s.end(), [](char c) { return c >= '0' && c <= '9'; })) {
+        throw InvalidInput("top_k must be an integer from 1 to 1000000");
+    }
+    return top_k_from_json(json(std::stoll(s)));
+}
+
+uint64_t content_length(const httplib::Request& req) {
+    return req.has_header("Content-Length") ? req.get_header_value_u64("Content-Length") : 0;
+}
+
+void drain(const httplib::Request& req, const httplib::ContentReader& reader) {
+    if (req.is_multipart_form_data()) {
+        reader([](const httplib::MultipartFormData&) { return true; }, [](const char*, size_t) { return true; });
+    } else {
+        reader([](const char*, size_t) { return true; });
+    }
+}
+
+// Reads the body through httplib's ContentReader, so nothing is buffered
+// before the handler has an admission slot. Receivers never abort: an
+// oversize or unwanted part is discarded while the stream is still read to
+// its end, which keeps the connection usable.
+//
+// Multipart: exactly one file part named "image" or "file", plus an optional
+// "top_k" field. JSON: {"image": "<base64 or data:image/(jpeg|png);base64,...>", "top_k": k}.
+void read_image_request(const httplib::Request& req, const httplib::Response& res,
+                        const httplib::ContentReader& reader, uint64_t max_image_bytes, uint64_t max_body_bytes, std::string& bytes, int& top_k) {
+    top_k = 0;
+    bytes.clear();
+    bool too_large = false;
+    bool ok = false;
+    if (req.is_multipart_form_data()) {
+        enum class Part { Image, TopK, Other } cur = Part::Other;
+        size_t image_parts = 0;
+        std::string top_k_field;
+        bool has_top_k = false;
+        ok = reader(
+            [&](const httplib::MultipartFormData& f) {
+                if (f.name == "image" || f.name == "file") {
+                    cur = ++image_parts == 1 && !too_large ? Part::Image : Part::Other;
+                } else if (f.name == "top_k") {
+                    cur = Part::TopK;
+                    has_top_k = true;
+                    top_k_field.clear();
+                } else {
+                    cur = Part::Other;
+                }
+                return true;
+            },
+            [&](const char* d, size_t n) {
+                if (cur == Part::Image) {
+                    if (bytes.size() + n > max_image_bytes) {
+                        too_large = true;
+                        cur = Part::Other;
+                        std::string().swap(bytes);
+                    } else {
+                        bytes.append(d, n);
+                    }
+                } else if (cur == Part::TopK && top_k_field.size() < 16) {
+                    top_k_field.append(d, std::min<size_t>(n, 16));
+                }
+                return true;
+            });
+        if (ok && too_large) {
+            throw PayloadTooLarge("image is larger than the " + std::to_string(max_image_bytes) + " byte limit");
+        }
+        if (ok) {
+            if (image_parts != 1) throw InvalidInput("exactly one image part ('image' or 'file') required");
+            if (has_top_k) top_k = top_k_from_field(top_k_field);
+            return;
+        }
+    } else {
+        std::string body;
+        const uint64_t declared = content_length(req);
+        if (declared <= max_body_bytes) body.reserve(static_cast<size_t>(declared));
+        ok = reader([&](const char* d, size_t n) {
+            if (too_large) return true;
+            if (body.size() + n > max_body_bytes) {
+                too_large = true;
+                std::string().swap(body);
+            } else {
+                body.append(d, n);
+            }
+            return true;
+        });
+        if (ok && too_large) {
+            throw PayloadTooLarge("request body is over the " + std::to_string(max_body_bytes) + " byte limit");
+        }
+        if (ok) {
+            json obj;
+            std::string error;
+            if (!parse_flat_json_object(body, obj, error)) {
+                if (error == "request body is not valid JSON") error += " (send multipart/form-data or a JSON object)";
+                throw InvalidInput(error);
+            }
+            std::string().swap(body);
+            if (!obj.contains("image") || !obj["image"].is_string()) {
+                throw InvalidInput("'image' (a base64 string) is required");
+            }
+            if (obj.contains("top_k")) top_k = top_k_from_json(obj["top_k"]);
+            std::string image = std::move(obj["image"].get_ref<std::string&>());
+            obj = json();
+            std::string_view s = image;
+            if (s.rfind("http://", 0) == 0 || s.rfind("https://", 0) == 0) {
+                throw InvalidInput("remote image URLs are not supported; send base64 or a data: URL");
+            }
+            if (s.rfind("data:", 0) == 0) {
+                bool prefix_ok = false;
+                for (std::string_view prefix : {"data:image/jpeg;base64,", "data:image/png;base64,"}) {
+                    if (s.rfind(prefix, 0) == 0) {
+                        s.remove_prefix(prefix.size());
+                        prefix_ok = true;
+                        break;
+                    }
+                }
+                if (!prefix_ok) throw InvalidInput("data URLs must be data:image/jpeg;base64 or data:image/png;base64");
+            }
+            if (!imgproc::strict_base64_decode(s, bytes)) throw InvalidInput("'image' is not valid base64");
+            return;
+        }
+    }
+    std::string().swap(bytes);
+    // A failed read has set res.status: 413 for a Content-Length over the
+    // payload limit, 400 for a malformed or truncated body.
+    if (res.status == 413) {
+        throw PayloadTooLarge("request body is over the " + std::to_string(max_body_bytes) + " byte limit");
+    }
+    throw InvalidInput("cannot read the request body (malformed multipart or truncated)");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -665,7 +855,19 @@ int main(int argc, char** argv) {
         Args args = parse_args(argc, argv);
         g_verbose = args.verbose;
         raise_oom_score_adj();
-        Model model(args.model_path, args);
+        std::unique_ptr<Model> text_model;
+        std::unique_ptr<ImageModel> image;
+        if (is_image_model(args.model_path)) {
+            ImageServeOptions opts;
+            opts.max_image_bytes = args.max_image_bytes;
+            opts.limits.max_pixels = args.max_image_pixels;
+            opts.limits.budget_factor = args.decode_budget_factor;
+            opts.limits.max_budget = args.max_decode_bytes;
+            opts.max_concurrent_decodes = args.max_concurrent_decodes;
+            image = std::make_unique<ImageModel>(args.model_path, args.threads, opts, args.verbose);
+        } else {
+            text_model = std::make_unique<Model>(args.model_path, args);
+        }
 
         httplib::Server srv;
         // httplib's default sets SO_REUSEPORT on Linux, which lets a second
@@ -674,11 +876,35 @@ int main(int argc, char** argv) {
             int one = 1;
             setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
         });
-        srv.set_payload_max_length(kPayloadMax);
-        srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
-            res.set_content(json{{"status", "ok"}, {"engine", "executorch"}}.dump(), "application/json");
+        // Base64 inflates by 4/3; 64 KiB covers multipart headers and the JSON wrapper.
+        const uint64_t max_body_bytes = args.max_image_bytes * 4 / 3 + (64u << 10);
+        // Image requests read their body only after taking one of these, so
+        // http_threads bounds waiting connections, not buffered bodies. One
+        // more than the decode slots lets the next body arrive during a decode.
+        CountingSemaphore admission(args.max_concurrent_decodes + 1);
+        if (image) {
+            const size_t http_threads = static_cast<size_t>(args.http_threads);
+            srv.new_task_queue = [http_threads] { return new httplib::ThreadPool(http_threads); };
+            srv.set_payload_max_length(static_cast<size_t>(max_body_bytes));
+            if (args.decode_budget_factor * args.max_image_pixels + (4u << 20) > args.max_decode_bytes) {
+                fprintf(stderr,
+                        "et-server: warning: --decode-budget-factor x --max-image-pixels exceeds "
+                        "--max-decode-bytes; images near the pixel cap may fail the decode budget\n");
+            }
+        } else {
+            srv.set_payload_max_length(kPayloadMax);
+        }
+        srv.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
+            json health{{"status", "ok"}, {"engine", "executorch"}};
+            if (image) health["task"] = "image-classification";
+            res.set_content(health.dump(), "application/json");
         });
         srv.Post("/classify", [&](const httplib::Request& req, httplib::Response& res) {
+            if (!text_model) {
+                send_error(res, 400, "this server hosts an image-classification model; POST /classify/image");
+                return;
+            }
+            Model& model = *text_model;
             std::string text;
             int top_k = 0;
             try {
@@ -696,6 +922,39 @@ int main(int argc, char** argv) {
             } catch (const std::exception& e) {
                 res.status = 500;
                 res.set_content(error_body(e.what()), "application/json");
+            }
+        });
+        srv.Post("/classify/image", [&](const httplib::Request& req, httplib::Response& res,
+                                        const httplib::ContentReader& reader) {
+            if (!image) {
+                drain(req, reader);
+                send_error(res, 400, "this server hosts a text model; POST /classify");
+                return;
+            }
+            if (content_length(req) > max_body_bytes) {
+                drain(req, reader);
+                send_error(res, 413, "request body is over the " + std::to_string(max_body_bytes) + " byte limit");
+                return;
+            }
+            if (!admission.acquire_for(kAdmissionWait)) {
+                drain(req, reader);
+                send_error(res, 503, "busy: no request slot became free within 30 s");
+                return;
+            }
+            SlotGuard slot(admission);
+            try {
+                std::string bytes;
+                int top_k = 0;
+                read_image_request(req, res, reader, args.max_image_bytes, max_body_bytes, bytes, top_k);
+                res.set_content(image->classify(bytes, top_k).dump(), "application/json");
+            } catch (const InvalidInput& e) {
+                send_error(res, 400, e.what());
+            } catch (const PayloadTooLarge& e) {
+                send_error(res, 413, e.what());
+            } catch (const Busy& e) {
+                send_error(res, 503, e.what());
+            } catch (const std::exception& e) {
+                send_error(res, 500, e.what());
             }
         });
 
