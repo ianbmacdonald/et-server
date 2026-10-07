@@ -17,6 +17,8 @@ export.py shipped in the lemonade-sdk *-ONNX classifier repositories.
 
 It links:
 - ExecuTorch (https://github.com/pytorch/executorch), BSD 3-Clause License
+- PyTorch c10 and ATen vectorization headers (https://github.com/pytorch/pytorch), BSD-style License
+- FP16 and FXdiv (XNNPACK headers), MIT License
 - XNNPACK, BSD 3-Clause License
 - cpuinfo, BSD 2-Clause License
 - pthreadpool, BSD 2-Clause License

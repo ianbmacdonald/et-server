@@ -45,6 +45,9 @@ need "$ET/backends/xnnpack/third-party/FP16/LICENSE" FP16-LICENSE
 need "$ET/backends/xnnpack/third-party/FXdiv/LICENSE" FXdiv-LICENSE
 need "$ET/kernels/optimized/third-party/eigen/COPYING.MPL2" Eigen-COPYING.MPL2
 need "$ET/third-party/flatbuffers/LICENSE" flatbuffers-LICENSE
+# runtime/core/portable_type/c10 and the optimized kernels' ATen vectorization headers (from the venv's torch
+# wheel, which the ExecuTorch build includes) are PyTorch code.
+need "$(ls "$R"/tflite-venv/lib/python3*/site-packages/torch-*.dist-info/licenses/LICENSE | head -1)" PyTorch-LICENSE
 if [ "$ARCH" = aarch64 ]; then
   # The XNNPACK delegate links KleidiAI on aarch64 (nothing on x86_64).
   need "$ETB/kleidiai-source/LICENSES/Apache-2.0.txt" KleidiAI-LICENSE
