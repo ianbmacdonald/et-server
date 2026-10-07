@@ -29,7 +29,7 @@ Each method is the same graph at one fixed sequence length. The exporter writes 
 keeping the trailing `[SEP]`, and run on the smallest loaded method that holds it, padded with an
 attention mask of zero.
 
-v0.1.0 serves text classification only, and checks every method at startup: exactly two int64
+The text path serves text classification only, and checks every method at startup: exactly two int64
 `[1, L]` inputs in the order `input_ids`, `attention_mask`, and a float32 `[1, labels]` first output
 whose width matches `id2label`. Anything else stops the server with one `et-server:` line on stderr.
 
@@ -69,8 +69,8 @@ et-server --model-path <model-dir> --port <n> [--threads N] [--seq-lens 64,512] 
 - `--seq-lens 64,512`: load only these methods. Every loaded method shares one packed copy of the
   weights, so a subset saves little memory; it saves load time.
 - `--weight-cache FILE`: accepted for command-line compatibility with tflite-server and checked
-  (at most 254 bytes, since ExecuTorch truncates longer backend options), but **not used in v0.1.0**:
-  the packed weights are shared in memory. An on-disk cache is planned for v0.2.0. A started server
+  (at most 254 bytes, since ExecuTorch truncates longer backend options), but **not used**:
+  the packed weights are shared in memory. A started server
   prints one line saying the flag was accepted and not used.
 - `--verbose`: log the methods loaded, the load time, the default thread stack size, and the token
   count, last token id and method of each request.
@@ -84,6 +84,10 @@ A failed start prints exactly one `et-server:` line on stderr and exits 1.
   The whole text is tokenized and the tokens are cut to `max_length`, keeping the trailing `[SEP]`;
   the 64 KiB body cap bounds the tokenizer's work. There is no byte-level clip before tokenizing,
   because whitespace or zero-width padding would then push real content out of view.
+
+Socket timeouts: a connection that sends nothing for 5 s while a request is being read, or accepts
+nothing for 5 s while a response is written, is closed (cpp-httplib's read and write timeouts, set
+explicitly). It is a per-read idle limit, not a cap on a request's total time.
 
 It binds 127.0.0.1 only, without `SO_REUSEPORT`, so a second instance on a port in use fails to bind
 instead of sharing its traffic. The binary sets a 1 MiB default thread stack (musl's default is 128 KiB). Lemonade reaches it as a local subprocess. At startup it raises its own
@@ -99,13 +103,20 @@ On the ai4 build host layout (`~/build-litert`):
 ```bash
 tools/et-musl-build.sh     # ExecuTorch v1.5.1 static libraries, once; checks the checkout is v1.5.1
 systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh
-./package-release.sh v0.1.0
+./package-release.sh v0.2.0
 ```
 
-Selective build: `ET_SELECT_OPS_MODEL=<model-dir>/model.pte tools/et-musl-build.sh` builds an ExecuTorch tree
-whose `libexecutorch_selected_kernels.a` registers only the operators the model leaves outside the XNNPACK
-delegate (15 for the DistilBERT export); then `ET_SERVER_KERNELS_LIB=<tree>/libexecutorch_selected_kernels.a
-./build-prplos-x86_64.sh`. A model that needs another operator then fails at load. `-DET_SERVER_BUILD_ET_RUN=ON`
+Curated (release default) or general build. The releases link a selective ExecuTorch tree that
+registers only the curated operator set, `ops/curated.txt`: the 25 operators ExecuTorch's `gen_oplist`
+finds outside the XNNPACK delegate in every `.pte` of the six use cases of the gateway study (text
+classification, sentence embeddings, image classification, object detection, audio, time series; 16
+models, among them the DistilBERT text export and the MobileNetV2 image export). Build it with
+`ET_SELECT_OPS_FILE=ops/curated.txt EXECUTORCH_BUILD=<tree> tools/et-musl-build.sh`, then
+`EXECUTORCH_BUILD=<tree> ET_SERVER_KERNELS_LIB=<tree>/libexecutorch_selected_kernels.a ./build-prplos-x86_64.sh`.
+A model that needs another operator fails at load. The general build is the same two steps without
+`ET_SELECT_OPS_FILE` and `ET_SERVER_KERNELS_LIB`: every optimized and portable kernel is linked.
+`ET_SELECT_OPS_MODEL=<model-dir>/model.pte` or `ET_SELECT_OPS_LIST=aten::add.out,...` select for your own
+models instead. `-DET_SERVER_BUILD_ET_RUN=ON`
 also builds `et-run`, which runs any `.pte` method on a raw float32 input with the same link.
 
 `build-prplos-x86_64.sh` cross-compiles with the prplOS 5.1 gcc 13.3.0 musl toolchain against the raw
