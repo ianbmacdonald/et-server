@@ -18,6 +18,7 @@ cmake -S "$SRC" -B "$BLD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=$T/x86_64-openwrt-linux-musl-gcc -DCMAKE_CXX_COMPILER=$T/x86_64-openwrt-linux-musl-g++ \
   -DCMAKE_SYSROOT=$SD/target-x86_64_musl \
   -DEXECUTORCH_SRC="$EXECUTORCH_SRC" -DEXECUTORCH_BUILD="$EXECUTORCH_BUILD" \
+  -DET_SERVER_KERNELS_LIB="${ET_SERVER_KERNELS_LIB:-$EXECUTORCH_BUILD/configurations/liboptimized_native_cpu_ops_lib.a}" \
   -DTOKENIZERS_CPP_SRC=$R/tokenizers-cpp \
   -DTOKENIZERS_C_LIB=$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release/libtokenizers_c.a
 nice -n 19 cmake --build "$BLD" -j"$JOBS"

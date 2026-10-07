@@ -24,6 +24,14 @@ B=${EXECUTORCH_BUILD:-$R/executorch-musl-x86_64}
 PY=${PY:-$R/tflite-venv/bin/python}
 JOBS=${JOBS:-6}
 WEIGHT_CACHE=${WEIGHT_CACHE:-OFF}
+# Selective build (ExecuTorch's own mechanism): ET_SELECT_OPS_MODEL=<model.pte> registers only the
+# operators that model's non-delegated graph calls; ET_SELECT_OPS_LIST="aten::add.out,..." an explicit
+# list. Either adds libexecutorch_selected_kernels.a to the tree; build et-server with
+# ET_SERVER_KERNELS_LIB=$B/libexecutorch_selected_kernels.a. Unset: every optimized+portable kernel.
+SELECT=()
+[ -n "${ET_SELECT_OPS_MODEL:-}" ] && SELECT+=(-DEXECUTORCH_SELECT_OPS_MODEL="$(readlink -f "$ET_SELECT_OPS_MODEL")")
+[ -n "${ET_SELECT_OPS_LIST:-}" ] && SELECT+=(-DEXECUTORCH_SELECT_OPS_LIST="$ET_SELECT_OPS_LIST")
+[ ${#SELECT[@]} -le 1 ] || { echo "set ET_SELECT_OPS_MODEL or ET_SELECT_OPS_LIST, not both" >&2; exit 1; }
 WANT_TAG=v1.5.1
 
 [ "$(basename "$SRC")" = executorch ] || { echo "the checkout directory must be named 'executorch': $SRC" >&2; exit 1; }
@@ -57,10 +65,12 @@ cmake -S "$SRC" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DEXECUTORCH_XNNPACK_ENABLE_WEIGHT_CACHE="$WEIGHT_CACHE" \
   -DEXECUTORCH_BUILD_EXECUTOR_RUNNER=ON -DEXECUTORCH_BUILD_EXTENSION_DATA_LOADER=ON \
   -DEXECUTORCH_BUILD_EXTENSION_MODULE=ON -DEXECUTORCH_BUILD_EXTENSION_TENSOR=ON \
-  -DEXECUTORCH_BUILD_PYBIND=OFF -DEXECUTORCH_BUILD_TESTS=OFF > "$B.cfg.log" 2>&1
+  -DEXECUTORCH_BUILD_PYBIND=OFF -DEXECUTORCH_BUILD_TESTS=OFF "${SELECT[@]}" > "$B.cfg.log" 2>&1
 # executor_runner pulls in the core, kernels and XNNPACK; the extension libraries et-server also
 # links are separate targets.
-nice -n 19 cmake --build "$B" -j"$JOBS" --target executor_runner extension_module_static \
+TARGETS=(executor_runner)
+[ ${#SELECT[@]} -eq 1 ] && TARGETS+=(executorch_selected_kernels)
+nice -n 19 cmake --build "$B" -j"$JOBS" --target "${TARGETS[@]}" extension_module_static \
   extension_data_loader extension_flat_tensor extension_named_data_map extension_tensor \
   extension_threadpool > "$B.build.log" 2>&1
 RUN=$(find "$B" -name executor_runner -type f -perm -u+x | head -1)

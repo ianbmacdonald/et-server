@@ -83,6 +83,12 @@ systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86
 ./package-release.sh v0.1.0
 ```
 
+Selective build: `ET_SELECT_OPS_MODEL=<model-dir>/model.pte tools/et-musl-build.sh` builds an ExecuTorch tree
+whose `libexecutorch_selected_kernels.a` registers only the operators the model leaves outside the XNNPACK
+delegate (15 for the DistilBERT export); then `ET_SERVER_KERNELS_LIB=<tree>/libexecutorch_selected_kernels.a
+./build-prplos-x86_64.sh`. A model that needs another operator then fails at load. `-DET_SERVER_BUILD_ET_RUN=ON`
+also builds `et-run`, which runs any `.pte` method on a raw float32 input with the same link.
+
 `build-prplos-x86_64.sh` cross-compiles with the prplOS 5.1 gcc 13.3.0 musl toolchain against the raw
 ExecuTorch build tree (`EXECUTORCH_BUILD`) and source checkout (`EXECUTORCH_SRC`), strips the binary,
 and fails unless it needs only `libc.so`, `libgcc_s.so.1` and `libstdc++.so.6`.
