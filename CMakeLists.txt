@@ -82,7 +82,8 @@ add_library(et_image STATIC
   src/image_preprocess.cpp
   src/stb_image_impl.cpp)
 target_include_directories(et_image PUBLIC src third_party/stb)
-target_link_libraries(et_image PUBLIC nlohmann_json::nlohmann_json)
+find_package(Threads REQUIRED)
+target_link_libraries(et_image PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 target_compile_options(et_image PRIVATE -ffunction-sections -fdata-sections)
 
 add_executable(et-server src/main.cpp src/image_model.cpp)

@@ -28,5 +28,5 @@ It links:
   licenses/rust-crates.txt
 - cpp-httplib, MIT License
 - nlohmann/json, MIT License
-- stb_image (https://github.com/nothings/stb), public domain or MIT License, vendored
-  in third_party/stb
+- stb_image v2.30 (https://github.com/nothings/stb, commit 013ac3b), public domain or MIT
+  License, vendored unmodified in third_party/stb (see third_party/stb/README)

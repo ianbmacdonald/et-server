@@ -113,6 +113,11 @@ static void* budget_realloc(void* p, size_t n) {
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
+// Two decodes can fail at once (--max-concurrent-decodes 2); stbi_failure_reason() is
+// only per-request if stb keeps it per thread.
+#ifndef STBI_THREAD_LOCAL
+#error "stb_image must be built with thread-local failure reasons (do not define STBI_NO_THREAD_LOCALS)"
+#endif
 
 namespace stb_budget {
 

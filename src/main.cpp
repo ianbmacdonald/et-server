@@ -76,6 +76,7 @@ constexpr size_t kPayloadMax = 64 * 1024;
 constexpr int kOomScoreAdj = 500;
 constexpr long long kMaxTopK = 1000000;
 constexpr auto kAdmissionWait = std::chrono::seconds(30);
+constexpr auto kSocketTimeout = std::chrono::seconds(5);
 
 bool g_verbose = false;
 
@@ -316,7 +317,7 @@ Manifest manifest_from_json(const fs::path& dir) {
     m.task = j.at("task").get<std::string>();
     if (m.task != "text-classification") {
         throw std::runtime_error("unsupported task in manifest.json: '" + m.task +
-                                 "' (v0.1.0 serves text-classification only)");
+                                 "' (the text path serves text-classification only; image models set \"task\": \"image-classification\")");
     }
     if (j.contains("score_normalization")) {
         if (!j["score_normalization"].is_string()) {
@@ -870,6 +871,9 @@ int main(int argc, char** argv) {
         }
 
         httplib::Server srv;
+        // Per-recv idle limits, not a cap on a request's total time.
+        srv.set_read_timeout(kSocketTimeout);
+        srv.set_write_timeout(kSocketTimeout);
         // httplib's default sets SO_REUSEPORT on Linux, which lets a second
         // instance share a live port and receive part of its traffic.
         srv.set_socket_options([](socket_t sock) {
