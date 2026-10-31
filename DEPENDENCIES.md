@@ -21,8 +21,8 @@ network namespace with only a down loopback), as was the et-server stage given `
 - et-server: two CMake FetchContent sources (cpp-httplib, nlohmann/json); give
   `FETCHCONTENT_SOURCE_DIR_HTTPLIB` / `FETCHCONTENT_SOURCE_DIR_JSON` (the build scripts take
   `HTTPLIB_SRC` / `JSON_SRC`).
-- Tokenizers shim: mlc-ai/tokenizers-cpp plus 81 Rust crates from `rust/Cargo.lock`
-  (`cargo vendor`, then `cargo build --offline --locked`).
+- Tokenizers shim: mlc-ai/tokenizers-cpp `c586c52` plus `patches/musl/tokenizers-cpp` (its `rust/Cargo.lock`:
+  the shim and 80 crates; `cargo vendor`, then `cargo build --offline --locked`, `tools/build-tokenizers.sh`).
 - Licences: all permissive (BSD, MIT, Apache-2.0, MPL-2.0 for Eigen, Unicode/Unlicense options among
   the crates). No GPL, LGPL or non-redistributable component is compiled or linked; nothing in the
   default build is CUDA, QAIRT or another vendor SDK. The source checkout carries more submodules than
@@ -125,13 +125,34 @@ Vendored: `third_party/stb/stb_image.h` (v2.30, commit `013ac3b`, public domain 
 | Source | URL | Pin | Supply locally | Licence |
 |---|---|---|---|---|
 | tokenizers-cpp | https://github.com/mlc-ai/tokenizers-cpp.git | `c586c52f93f7b060753bd2388eb96a105cb7374d` | git checkout; only `rust/` and `include/tokenizers_c.h` are used (its `msgpack` and `sentencepiece` submodules are not) | Apache-2.0 |
-| 81 Rust crates (HuggingFace `tokenizers` 0.21.4, `onig_sys` 69.9.3 with bundled Oniguruma, ...) | crates.io | `rust/Cargo.lock` (checksums) | `cargo vendor` in the download step, then `cargo build --release --locked --offline --target <arch>-unknown-linux-musl` with a `.cargo/config.toml` pointing at the vendor directory | MIT / Apache-2.0 / BSD-2-Clause / Unlicense / Unicode options, per crate in `licenses/rust-crates.txt` of a release (`tools/rust_licenses.py`) |
-| Rust toolchain | rustup stable with the `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` std | the toolchain the shim was built with | OpenWrt's rust host package, or a rustup tarball | MIT OR Apache-2.0 |
+| 80 Rust crates (HuggingFace `tokenizers` 0.21.4, `onig_sys` 69.9.3 with bundled Oniguruma, ...) | crates.io | `rust/Cargo.lock` (checksums) | `cargo vendor` in the download step, then `cargo build --release --locked --offline --target <arch>-unknown-linux-musl` with a `.cargo/config.toml` pointing at the vendor directory | MIT / Apache-2.0 / BSD-2-Clause / Unlicense / Unicode options, per crate in `licenses/rust-crates.txt` of a release (`tools/rust_licenses.py`) |
+| Rust toolchain | rustup stable with the `x86_64-unknown-linux-musl` / `aarch64-unknown-linux-musl` std | rustc 1.98.1 for the v0.3.1 archives; 1.90.0 also builds it | OpenWrt's rust host package, or a rustup tarball | MIT OR Apache-2.0 |
 
-The shim archives used for the builds in this branch were the existing ones on ai4
-(`tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release/libtokenizers_c.a`,
-`aarch64/tokenizers-target/aarch64-unknown-linux-musl/release/libtokenizers_c.a`); they were not
-rebuilt.
+`patches/musl/tokenizers-cpp/0001-build-add-rust-Cargo.lock-for-a-pinned-vendorable-sh.patch` adds the
+`rust/Cargo.lock` (81 packages: the `tokenizers-c` shim and 80 crates); the commit ships none. It is the same
+lock as tflite-server's patch of the same name (sha256 of the lock file
+`c3f911356076b2d8de03994aa73e6f0d2226c9c560e05c162cbce36e5ea24938`), the one the prplOS musl shim builds
+have used since 2026-09. `tools/build-tokenizers.sh <arch>` applies it when `rust/Cargo.lock` is missing
+and builds the shim:
+
+- source: tokenizers-cpp `c586c52f93f7b060753bd2388eb96a105cb7374d` + that patch; `cargo build --release
+  --locked --target <triple>` in `rust/`.
+- targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl` (rustup std for both).
+- rustc: the v0.3.1 archives were built with rustc 1.98.1 (48a229cea 2026-09-01), cargo 1.98.1.
+  The x86_64 shim also builds with rustc 1.90.0 (1159e78c4 2025-09-14), the Rust of prplOS's buildroot, from the
+  same lock with no change (the highest `rust-version` among the locked crates is 1.87.0, `wasip2`).
+- C compiler and linker (the `cc` crate builds `onig_sys`'s bundled Oniguruma): `CC_<triple>`,
+  `CXX_<triple>`, `AR_<triple>` = the prplOS `<arch>-openwrt-linux-musl-gcc` / `-g++` / `-gcc-ar`,
+  `CFLAGS_<triple>` = the build's CPU flags (aarch64: `-march=armv8-a+crc -mtune=cortex-a53`, x86_64: none),
+  `CARGO_TARGET_<TRIPLE>_LINKER` = the prplOS gcc, and on aarch64
+  `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-cpu=cortex-a53"`. `STAGING_DIR` names the
+  SDK, as for the other stages. No other RUSTFLAGS.
+- offline: `cargo vendor --locked <dir>` once, then `CARGO_NET_OFFLINE=true` and
+  `CARGO_EXTRA="--config source.crates-io.replace-with='vendored' --config source.vendored.directory='<dir>'"`.
+  The v0.3.1 archives were built this way with no network (`unshare -rn`).
+
+`build-prplos-<arch>.sh` takes the checkout as `TOKENIZERS_SRC` and the archive as `TOKENIZERS_C_LIB`;
+`package-release.sh` takes `TOKENIZERS_SRC` and `TOKDIR` (the archive's directory) for the licence texts.
 
 ## Toolchain and target
 

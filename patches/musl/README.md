@@ -9,6 +9,7 @@ here. `tools/apply-musl-patches.sh <executorch-src> [<torch-include-dir>]` appli
 |---|---|---|---|
 | `executorch/` | https://github.com/pytorch/executorch | `3b60683923245cf472b7323426920e15623ba361` (tag `v1.5.1`) | the checkout, `git apply` (or `git am`) at its root |
 | `pytorch/` | https://github.com/pytorch/pytorch | `cf30153c4c131c8164ee7798e5022d810682e2cb` (the `git_version` of the torch 2.13.0 wheel) | a PyTorch checkout (`-p1`), or the wheel's `site-packages/torch/include` (`-p1` for `torch/headeronly/...`, `-p3` for `aten/src/ATen/...`) |
+| `tokenizers-cpp/` | https://github.com/mlc-ai/tokenizers-cpp | `c586c52f93f7b060753bd2388eb96a105cb7374d` (main) | the checkout, `git apply` at its root; `tools/build-tokenizers.sh` applies it when `rust/Cargo.lock` is missing |
 
 ## executorch
 
@@ -34,3 +35,10 @@ include PyTorch headers (c10, ATen vectorization) from the torch package the bui
 
 The torch wheel installs its headers with an extra `#if !defined(TORCH_STABLE_ONLY) ...` wrapper line
 around `vec128_uint_aarch64.h`; the patch applies to both layouts with a one-line offset.
+
+## tokenizers-cpp
+
+- `0001-build-add-rust-Cargo.lock-for-a-pinned-vendorable-sh.patch`: adds the `rust/Cargo.lock` the shim
+  builds use (the commit ships none), so `cargo build --locked` and `cargo vendor` work. The same patch as
+  tflite-server's `patches/musl/tokenizers-cpp/0001`; the upstream `.gitignore` lists `Cargo.lock`, which
+  does not stop `git apply`.
