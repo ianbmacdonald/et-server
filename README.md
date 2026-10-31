@@ -126,9 +126,14 @@ Curated (the default) or full operator set. By default the ExecuTorch tree is a 
 registers only the curated operator set, `ops/curated.txt`: the operators ExecuTorch's `gen_oplist`
 finds outside the XNNPACK delegate in every `.pte` of the six use cases of the gateway study (text
 classification, sentence embeddings, image classification, object detection, audio, time series; 16
-models, among them the DistilBERT text export and the MobileNetV2 image export), widened for the
-zero-shot and decision models listed in that file. `build-prplos-<arch>.sh` links the tree's
-`libexecutorch_selected_kernels.a` when it has one. A model that needs another operator fails at load.
+models, among them the DistilBERT text export and the MobileNetV2 image export). `build-prplos-<arch>.sh`
+links the tree's `libexecutorch_selected_kernels.a` when it has one. A model that needs another operator
+fails at load.
+The zero-shot and decision models (knowledgator gliclass-edge-v3.0 and gliclass-modern-base-v3.0,
+SupersonicLabs Julia-1, convaiinnovations Laya) are opt-in: they take a label list or option list with
+each request, and `/classify` takes text only, with the manifest's fixed labels, so no HTTP route can
+serve them yet. `ET_SELECT_OPS_FILE=ops/zeroshot.txt tools/et-musl-build.sh <arch>` builds the curated
+set plus the 12 operators their exports add.
 `ET_KERNELS=full tools/et-musl-build.sh` builds the full set instead (every optimized and portable
 kernel, `configurations/liboptimized_native_cpu_ops_lib.a`), which `build-prplos-<arch>.sh` then links.
 `ET_SELECT_OPS_FILE=<file>`, `ET_SELECT_OPS_MODEL=<model-dir>/model.pte` or

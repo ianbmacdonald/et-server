@@ -76,9 +76,15 @@ KLIB=$(grep -E '^ET_SERVER_KERNELS_LIB:' "$BLD/CMakeCache.txt" | cut -d= -f2-)
   echo "ExecuTorch: $(git -C "$ET" describe --tags) $(git -C "$ET" rev-parse HEAD), static, from $(basename "$ETB")."
   if [ "$(basename "$KLIB")" = libexecutorch_selected_kernels.a ]; then
     SEL=$(grep -E '^EXECUTORCH_SELECT_OPS_LIST:' "$ETB/CMakeCache.txt" | cut -d= -f2-)
-    echo "Operators: curated, ops/curated.txt ($(echo "$SEL" | tr , '\n' | grep -c .) operators outside the XNNPACK delegate: the union over"
+    opsof() { grep -v '^#' "$1" | tr -d ' \t' | grep . | sort | paste -sd, -; }
+    SELS=$(echo "$SEL" | tr , '\n' | grep . | sort | paste -sd, -)
+    if [ "$SELS" = "$(opsof "$SRC/ops/curated.txt")" ]; then SETF="curated, ops/curated.txt"; EXTRA=""
+    elif [ "$SELS" = "$(opsof "$SRC/ops/zeroshot.txt")" ]; then SETF="opt-in, ops/zeroshot.txt"
+      EXTRA=" - plus the zero-shot and decision models gliclass-edge, gliclass-modern-base, Julia-1 and Laya"
+    else SETF="custom selection"; EXTRA=""; fi
+    echo "Operators: $SETF ($(echo "$SEL" | tr , '\n' | grep -c .) operators outside the XNNPACK delegate: the union over"
     echo "  the six use cases of the gateway study - text classification, sentence embeddings, image classification,"
-    echo "  object detection, audio, time series; 16 models incl. DistilBERT and MobileNetV2). Optimized kernels where"
+    echo "  object detection, audio, time series; 16 models incl. DistilBERT and MobileNetV2$EXTRA). Optimized kernels where"
     echo "  ExecuTorch has one, else portable. A model with another operator fails to load. Linking"
     echo "  configurations/liboptimized_native_cpu_ops_lib.a instead is the general build (every kernel)."
     echo "$SEL" | tr , ' ' | fold -s -w 100 | sed 's/^/  /'
