@@ -62,9 +62,11 @@ do. `/classify` returns 400 on an image model, and `/classify/image` 400 on a te
 ## Run
 
 ```bash
-et-server --model-path <model-dir> --port <n> [--threads N] [--seq-lens 64,512] [--weight-cache FILE] [--verbose]
+et-server --model-path <model-dir> --port <n> [--host ADDR] [--threads N] [--seq-lens 64,512] [--weight-cache FILE] [--verbose]
 ```
 
+- `--host ADDR`: the address to bind (default `127.0.0.1`); `0.0.0.0` binds every IPv4 interface, as a
+  container needs to publish the port.
 - `--threads N`: XNNPACK and kernel threads, 1 to 1024 (default: one per hardware thread).
 - `--seq-lens 64,512`: load only these methods. Every loaded method shares one packed copy of the
   weights, so a subset saves little memory; it saves load time.
@@ -89,8 +91,16 @@ Socket timeouts: a connection that sends nothing for 5 s while a request is bein
 nothing for 5 s while a response is written, is closed (cpp-httplib's read and write timeouts, set
 explicitly). It is a per-read idle limit, not a cap on a request's total time.
 
-It binds 127.0.0.1 only, without `SO_REUSEPORT`, so a second instance on a port in use fails to bind
-instead of sharing its traffic. The binary sets a 1 MiB default thread stack (musl's default is 128 KiB). Lemonade reaches it as a local subprocess. At startup it raises its own
+It binds 127.0.0.1 unless `--host` names another address, without `SO_REUSEPORT`, so a second instance
+on a port in use fails to bind instead of sharing its traffic. It has no authentication: bind a
+non-loopback address only on a network you trust.
+
+SIGTERM and SIGINT stop it cleanly: the listener closes and the process exits 0.
+The signals are blocked from the first line of `main` and taken by one waiter thread (`sigwait`), so this
+holds as PID 1 in a container, where a signal with no handler is ignored. A signal that arrives while the
+model is loading is acted on once loading ends and the server has started.
+
+The binary sets a 1 MiB default thread stack (musl's default is 128 KiB). Lemonade reaches it as a local subprocess. At startup it raises its own
 `oom_score_adj` to 500, so on a gateway that also runs an LLM the kernel reclaims the classifier first.
 
 Setting `ET_SERVER_XNNPACK_WEIGHT_CACHE=0` turns off the in-memory weight sharing. It exists to

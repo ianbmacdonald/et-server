@@ -34,8 +34,10 @@
 #include "image_preprocess.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -100,6 +102,7 @@ struct Manifest {
 
 struct Args {
     std::string model_path;
+    std::string host = "127.0.0.1";
     int port = 0;
     int threads = 0;
     std::string weight_cache;
@@ -137,7 +140,7 @@ std::vector<int> parse_seq_lens(const std::string& s) {
 }
 
 constexpr const char* kUsage =
-    "usage: et-server --model-path <dir> --port <n> [--threads N] [--weight-cache FILE] "
+    "usage: et-server --model-path <dir> --port <n> [--host ADDR] [--threads N] [--weight-cache FILE] "
     "[--seq-lens 64,512] [--verbose]; image models: [--max-image-bytes N] [--max-image-pixels N] "
     "[--max-concurrent-decodes 1..2] [--decode-budget-factor N] [--max-decode-bytes N] [--http-threads 2..16]";
 
@@ -169,7 +172,7 @@ Args parse_args(int argc, char** argv) {
             continue;
         }
         static const std::set<std::string> kValued = {
-            "--model-path", "--port", "--threads", "--weight-cache", "--seq-lens", "--max-image-bytes",
+            "--model-path", "--port", "--host", "--threads", "--weight-cache", "--seq-lens", "--max-image-bytes",
             "--max-image-pixels", "--decode-budget-factor", "--max-decode-bytes", "--max-concurrent-decodes",
             "--http-threads"};
         if (!kValued.count(f)) throw std::runtime_error("unknown argument '" + f + "'; " + kUsage);
@@ -177,6 +180,7 @@ Args parse_args(int argc, char** argv) {
         const std::string v = argv[++i];
         if (f == "--model-path") a.model_path = v;
         else if (f == "--port") a.port = parse_int_flag(f, v, 1, 65535);
+        else if (f == "--host") a.host = v;
         else if (f == "--threads") a.threads = parse_int_flag(f, v, 1, 1024);
         else if (f == "--weight-cache") a.weight_cache = v;
         else if (f == "--seq-lens") a.seq_lens = parse_seq_lens(v);
@@ -187,7 +191,7 @@ Args parse_args(int argc, char** argv) {
         else if (f == "--max-concurrent-decodes") a.max_concurrent_decodes = parse_int_flag(f, v, 1, 2);
         else a.http_threads = parse_int_flag(f, v, 2, 16);
     }
-    if (a.model_path.empty() || a.port == 0) throw std::runtime_error(kUsage);
+    if (a.model_path.empty() || a.port == 0 || a.host.empty()) throw std::runtime_error(kUsage);
     if (a.weight_cache.size() > kMaxWeightCachePath) {
         throw std::runtime_error("--weight-cache path is " + std::to_string(a.weight_cache.size()) +
                                  " bytes; it must be at most " + std::to_string(kMaxWeightCachePath) +
@@ -848,10 +852,49 @@ void read_image_request(const httplib::Request& req, const httplib::Response& re
     throw InvalidInput("cannot read the request body (malformed multipart or truncated)");
 }
 
+// Blocked before any thread starts, so every thread inherits the mask and only
+// SignalStop's waiter receives them.
+sigset_t block_stop_signals() {
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    sigaddset(&set, SIGINT);
+    if (pthread_sigmask(SIG_BLOCK, &set, nullptr) != 0) throw std::runtime_error("cannot block SIGTERM");
+    return set;
+}
+
+// In a container the engine is PID 1, where a signal with no handler is
+// ignored, so without this a stop waits out the runtime's SIGKILL timeout.
+class SignalStop {
+public:
+    SignalStop(httplib::Server& srv, const sigset_t& set) : set_(set) {
+        waiter_ = std::thread([this, &srv] {
+            int sig = 0;
+            sigwait(&set_, &sig);
+            // A signal during startup arrives before listen() binds.
+            while (!srv.is_running() && !done_) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            srv.stop();
+        });
+    }
+    ~SignalStop() {
+        done_ = true;
+        pthread_kill(waiter_.native_handle(), SIGTERM);
+        waiter_.join();
+    }
+    SignalStop(const SignalStop&) = delete;
+    SignalStop& operator=(const SignalStop&) = delete;
+
+private:
+    sigset_t set_;
+    std::atomic<bool> done_{false};
+    std::thread waiter_;
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
+        const sigset_t stop_signals = block_stop_signals();
         executorch::runtime::register_pal(executorch::runtime::PalImpl::create(&emit_et_log, __FILE__));
         Args args = parse_args(argc, argv);
         g_verbose = args.verbose;
@@ -962,8 +1005,9 @@ int main(int argc, char** argv) {
             }
         });
 
-        if (!srv.listen("127.0.0.1", args.port)) {
-            fprintf(stderr, "et-server: failed to bind 127.0.0.1:%d\n", args.port);
+        SignalStop signal_stop(srv, stop_signals);
+        if (!srv.listen(args.host, args.port)) {
+            fprintf(stderr, "et-server: failed to bind %s:%d\n", args.host.c_str(), args.port);
             return 1;
         }
         return 0;
