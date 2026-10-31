@@ -64,6 +64,10 @@ set(ET_ARCHIVES
   "${B}/libexecutorch_core.a"
   "${B}/backends/xnnpack/third-party/pthreadpool/libpthreadpool.a"
   "${B}/backends/xnnpack/third-party/cpuinfo/libcpuinfo.a")
+# aarch64: XNNPACK's KleidiAI microkernels are a separate archive (the x86_64 tree has none).
+if(EXISTS "${B}/kleidiai/libkleidiai.a")
+  list(APPEND ET_ARCHIVES "${B}/kleidiai/libkleidiai.a")
+endif()
 foreach(a ${ET_WHOLE_ARCHIVES} ${ET_ARCHIVES})
   if(NOT EXISTS "${a}")
     message(FATAL_ERROR "missing ExecuTorch archive ${a}")

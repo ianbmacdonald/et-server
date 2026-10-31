@@ -2,6 +2,8 @@
 # Build et-server musl-native for prplOS 5.1 x86_64 on the ai4 build host layout.
 # Run it under a memory cap, e.g.
 #   systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh
+# Offline: HTTPLIB_SRC and JSON_SRC name local checkouts of the two FetchContent sources
+# (DEPENDENCIES.md); unset, CMake clones them.
 set -euo pipefail
 R=${R:-$HOME/build-litert}
 SD=$R/prplos-5.1-staging
@@ -12,15 +14,23 @@ BLD=${BLD:-$SRC/build-prplos-x86_64}
 EXECUTORCH_SRC=${EXECUTORCH_SRC:-$R/et/executorch}
 EXECUTORCH_BUILD=${EXECUTORCH_BUILD:-$R/executorch-musl-x86_64}
 JOBS=${JOBS:-6}
+FC=()
+[ -n "${HTTPLIB_SRC:-}" ] && FC+=(-DFETCHCONTENT_SOURCE_DIR_HTTPLIB="$HTTPLIB_SRC")
+[ -n "${JSON_SRC:-}" ] && FC+=(-DFETCHCONTENT_SOURCE_DIR_JSON="$JSON_SRC")
+# The curated tree's selected-operator archive when it has one (tools/et-musl-build.sh, the default),
+# else every kernel (an ET_KERNELS=full tree).
+KLIB=${ET_SERVER_KERNELS_LIB:-$EXECUTORCH_BUILD/libexecutorch_selected_kernels.a}
+[ -f "$KLIB" ] || KLIB=$EXECUTORCH_BUILD/configurations/liboptimized_native_cpu_ops_lib.a
+echo "operator registration: $KLIB"
 rm -rf "$BLD"
 cmake -S "$SRC" -B "$BLD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
   -DCMAKE_C_COMPILER=$T/x86_64-openwrt-linux-musl-gcc -DCMAKE_CXX_COMPILER=$T/x86_64-openwrt-linux-musl-g++ \
-  -DCMAKE_SYSROOT=$SD/target-x86_64_musl \
+  -DCMAKE_SYSROOT=$SD/target-x86_64_musl "${FC[@]}" \
   -DEXECUTORCH_SRC="$EXECUTORCH_SRC" -DEXECUTORCH_BUILD="$EXECUTORCH_BUILD" \
-  -DET_SERVER_KERNELS_LIB="${ET_SERVER_KERNELS_LIB:-$EXECUTORCH_BUILD/configurations/liboptimized_native_cpu_ops_lib.a}" \
+  -DET_SERVER_KERNELS_LIB="$KLIB" \
   -DTOKENIZERS_CPP_SRC=$R/tokenizers-cpp \
-  -DTOKENIZERS_C_LIB=$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release/libtokenizers_c.a
+  -DTOKENIZERS_C_LIB=${TOKENIZERS_C_LIB:-$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release/libtokenizers_c.a}
 nice -n 19 cmake --build "$BLD" -j"$JOBS"
 "$T/x86_64-openwrt-linux-musl-strip" -o "$BLD/et-server.stripped" "$BLD/et-server"
 file "$BLD/et-server"

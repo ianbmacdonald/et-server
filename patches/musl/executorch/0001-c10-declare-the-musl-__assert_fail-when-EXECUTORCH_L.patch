@@ -1,0 +1,34 @@
+From 3ea5cdc830b3f3726b0089075b822ad4fdbc9b95 Mon Sep 17 00:00:00 2001
+From: Ian MacDonald <ian@netstatz.com>
+Date: Sat, 31 Oct 2026 00:51:41 -0400
+Subject: [PATCH] c10: declare the musl __assert_fail when EXECUTORCH_LIBC_MUSL
+ is set
+
+musl declares __assert_fail(const char*, const char*, int, const char*)
+like Emscripten (whose libc is musl); the vendored c10 Macros.h otherwise
+declares the glibc form (unsigned int line) and GCC rejects the
+conflicting declaration. musl defines no identifying macro, so the
+Emscripten branch is keyed on a flag the build passes:
+-DEXECUTORCH_LIBC_MUSL.
+
+Assisted-by: claude:opus-5.5
+---
+ runtime/core/portable_type/c10/torch/headeronly/macros/Macros.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/runtime/core/portable_type/c10/torch/headeronly/macros/Macros.h b/runtime/core/portable_type/c10/torch/headeronly/macros/Macros.h
+index 08c4e9f..49a4d42 100644
+--- a/runtime/core/portable_type/c10/torch/headeronly/macros/Macros.h
++++ b/runtime/core/portable_type/c10/torch/headeronly/macros/Macros.h
+@@ -503,7 +503,7 @@ extern SYCL_EXTERNAL void __assert_fail(
+     const char* file,
+     unsigned int line,
+     const char* func);
+-#elif (defined(__EMSCRIPTEN__))
++#elif (defined(__EMSCRIPTEN__) || defined(EXECUTORCH_LIBC_MUSL))
+ // As defined in assert.h in the Emscripten stdlib
+ _Noreturn void __assert_fail(
+     const char* expr,
+-- 
+2.53.0
+

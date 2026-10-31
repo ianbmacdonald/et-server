@@ -5,6 +5,7 @@
 #   EXECUTORCH_SRC    the ExecuTorch v1.5.1 checkout
 #   EXECUTORCH_BUILD  the ExecuTorch tree the server was linked against
 #   OUT               output directory (default $R/bundle)
+#   KLEIDIAI_SOURCE_DIR  aarch64: the KleidiAI source the build was given (default <tree>/kleidiai-source)
 set -euo pipefail
 VER=$1
 ARCH=${2:-x86_64}
@@ -50,8 +51,10 @@ need "$ET/third-party/flatbuffers/LICENSE" flatbuffers-LICENSE
 need "$(ls "$R"/tflite-venv/lib/python3*/site-packages/torch-*.dist-info/licenses/LICENSE | head -1)" PyTorch-LICENSE
 if [ "$ARCH" = aarch64 ]; then
   # The XNNPACK delegate links KleidiAI on aarch64 (nothing on x86_64).
-  need "$ETB/kleidiai-source/LICENSES/Apache-2.0.txt" KleidiAI-LICENSE
-  need "$ETB/kleidiai-source/LICENSES/BSD-3-Clause.txt" KleidiAI-BSD-3-Clause.txt
+  # XNNPACK downloads it into the tree unless the build was given KLEIDIAI_SOURCE_DIR.
+  KS=${KLEIDIAI_SOURCE_DIR:-$ETB/kleidiai-source}
+  need "$KS/LICENSES/Apache-2.0.txt" KleidiAI-LICENSE
+  need "$KS/LICENSES/BSD-3-Clause.txt" KleidiAI-BSD-3-Clause.txt
 fi
 need "$R/tokenizers-cpp/LICENSE" tokenizers-cpp-LICENSE
 need "$BLD/_deps/httplib-src/LICENSE" cpp-httplib-LICENSE

@@ -1,0 +1,33 @@
+From d12d8e4605918de31d6fdec25297ab41ab41f372 Mon Sep 17 00:00:00 2001
+From: Ian MacDonald <ian@netstatz.com>
+Date: Sat, 31 Oct 2026 00:51:50 -0400
+Subject: [PATCH 2/2] vec128: spell uint as unsigned int in the aarch64 uint
+ vectors
+
+uint is a glibc/BSD typedef from <sys/types.h>. glibc reaches it through
+the headers this file includes; musl does not, so on aarch64 musl the
+deleted operator[] overloads fail with "'uint' has not been declared".
+
+Assisted-by: claude:opus-5.5
+---
+ aten/src/ATen/cpu/vec/vec128/vec128_uint_aarch64.h | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/aten/src/ATen/cpu/vec/vec128/vec128_uint_aarch64.h b/aten/src/ATen/cpu/vec/vec128/vec128_uint_aarch64.h
+index 35f386f..cb70a9a 100644
+--- a/aten/src/ATen/cpu/vec/vec128/vec128_uint_aarch64.h
++++ b/aten/src/ATen/cpu/vec/vec128/vec128_uint_aarch64.h
+@@ -70,8 +70,8 @@ inline namespace CPU_CAPABILITY {
+         const Vectorized<uint##bit##_t>& a,                                   \
+         const Vectorized<uint##bit##_t>& b,                                   \
+         uint64_t count = size());                                             \
+-    const uint##bit##_t& operator[](uint idx) const = delete;                 \
+-    uint##bit##_t& operator[](uint idx) = delete;                             \
++    const uint##bit##_t& operator[](unsigned int idx) const = delete;         \
++    uint##bit##_t& operator[](unsigned int idx) = delete;                     \
+     Vectorized<uint##bit##_t> abs() const {                                   \
+       return values;                                                          \
+     }                                                                         \
+-- 
+2.53.0
+
