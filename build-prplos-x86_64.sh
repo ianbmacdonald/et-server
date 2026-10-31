@@ -2,7 +2,8 @@
 # Build et-server musl-native for prplOS 5.1 x86_64 on the ai4 build host layout.
 # Run it under a memory cap, e.g.
 #   systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh
-# Offline: HTTPLIB_SRC and JSON_SRC name local checkouts of the two FetchContent sources
+# TOKENIZERS_SRC: the tokenizers-cpp checkout; TOKENIZERS_C_LIB: its libtokenizers_c.a for this target
+# (tools/build-tokenizers.sh). Offline: HTTPLIB_SRC and JSON_SRC name local checkouts of the two FetchContent sources
 # (DEPENDENCIES.md); unset, CMake clones them.
 set -euo pipefail
 R=${R:-$HOME/build-litert}
@@ -29,7 +30,7 @@ cmake -S "$SRC" -B "$BLD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_SYSROOT=$SD/target-x86_64_musl "${FC[@]}" \
   -DEXECUTORCH_SRC="$EXECUTORCH_SRC" -DEXECUTORCH_BUILD="$EXECUTORCH_BUILD" \
   -DET_SERVER_KERNELS_LIB="$KLIB" \
-  -DTOKENIZERS_CPP_SRC=$R/tokenizers-cpp \
+  -DTOKENIZERS_CPP_SRC=${TOKENIZERS_SRC:-$R/tokenizers-cpp} \
   -DTOKENIZERS_C_LIB=${TOKENIZERS_C_LIB:-$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release/libtokenizers_c.a}
 nice -n 19 cmake --build "$BLD" -j"$JOBS"
 "$T/x86_64-openwrt-linux-musl-strip" -o "$BLD/et-server.stripped" "$BLD/et-server"

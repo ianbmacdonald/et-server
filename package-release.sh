@@ -5,6 +5,7 @@
 #   EXECUTORCH_SRC    the ExecuTorch v1.5.1 checkout
 #   EXECUTORCH_BUILD  the ExecuTorch tree the server was linked against
 #   OUT               output directory (default $R/bundle)
+#   TOKENIZERS_SRC    the tokenizers-cpp checkout; TOKDIR the directory holding the target's libtokenizers_c.a
 #   KLEIDIAI_SOURCE_DIR  aarch64: the KleidiAI source the build was given (default <tree>/kleidiai-source)
 #   HTTPLIB_SRC, JSON_SRC  the local httplib and json sources an offline build was given (default <BLD>/_deps)
 set -euo pipefail
@@ -16,12 +17,12 @@ case "$ARCH" in
 x86_64)
   SD=$R/prplos-5.1-staging; T=$SD/toolchain-x86_64_gcc-13.3.0_musl/bin/x86_64-openwrt-linux-musl-
   ET=${EXECUTORCH_SRC:-$R/et/executorch}; ETB=${EXECUTORCH_BUILD:-$R/executorch-musl-x86_64}
-  TOKDIR=$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release
+  TOKDIR=${TOKDIR:-$R/tokenizers-cpp/rust/target/x86_64-unknown-linux-musl/release}
   HOST="prplOS 5.1 x86_64 (gcc 13.3.0 musl toolchain)" ;;
 aarch64)
   SD=$R/prplos-5.1-staging-aarch64; T=$SD/toolchain-aarch64_cortex-a53_gcc-13.3.0_musl/bin/aarch64-openwrt-linux-musl-
   ET=${EXECUTORCH_SRC:-$R/aarch64/et/executorch}; ETB=${EXECUTORCH_BUILD:-$R/aarch64/executorch-musl-aarch64}
-  TOKDIR=$R/aarch64/tokenizers-target/aarch64-unknown-linux-musl/release
+  TOKDIR=${TOKDIR:-$R/aarch64/tokenizers-target/aarch64-unknown-linux-musl/release}
   HOST="prplOS 5.1 aarch64 cortex-a53 (gcc 13.3.0 musl toolchain, -march=armv8-a+crc -mtune=cortex-a53)" ;;
 *) echo "usage: $0 <version> [x86_64|aarch64]" >&2; exit 2 ;;
 esac
@@ -57,12 +58,13 @@ if [ "$ARCH" = aarch64 ]; then
   need "$KS/LICENSES/Apache-2.0.txt" KleidiAI-LICENSE
   need "$KS/LICENSES/BSD-3-Clause.txt" KleidiAI-BSD-3-Clause.txt
 fi
-need "$R/tokenizers-cpp/LICENSE" tokenizers-cpp-LICENSE
+TK=${TOKENIZERS_SRC:-$R/tokenizers-cpp}
+need "$TK/LICENSE" tokenizers-cpp-LICENSE
 need "${HTTPLIB_SRC:-$BLD/_deps/httplib-src}/LICENSE" cpp-httplib-LICENSE
 need "${JSON_SRC:-$BLD/_deps/json-src}/LICENSE.MIT" nlohmann-json-LICENSE
 need "$SRC/third_party/stb/LICENSE" stb-LICENSE
 # The Rust crates of the tokenizer shim (incl. HuggingFace tokenizers, onig, Oniguruma), per target.
-python3 "$SRC/tools/rust_licenses.py" "$R/tokenizers-cpp/rust" "$ARCH-unknown-linux-musl" "$L" et-server \
+python3 "$SRC/tools/rust_licenses.py" "$TK/rust" "$ARCH-unknown-linux-musl" "$L" et-server \
   --cargo "$HOME/.cargo/bin/cargo"
 RUSTC=$(strings "$TOKDIR/libtokenizers_c.a" | grep -o -m1 'rustc version [0-9][^ )]*' || true)
 RD=$(ls -d "$HOME"/.rustup/toolchains/stable-*/share/doc/rust/licenses | head -1)
