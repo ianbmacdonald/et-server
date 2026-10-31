@@ -6,6 +6,7 @@
 #   EXECUTORCH_BUILD  the ExecuTorch tree the server was linked against
 #   OUT               output directory (default $R/bundle)
 #   KLEIDIAI_SOURCE_DIR  aarch64: the KleidiAI source the build was given (default <tree>/kleidiai-source)
+#   HTTPLIB_SRC, JSON_SRC  the local httplib and json sources an offline build was given (default <BLD>/_deps)
 set -euo pipefail
 VER=$1
 ARCH=${2:-x86_64}
@@ -57,8 +58,8 @@ if [ "$ARCH" = aarch64 ]; then
   need "$KS/LICENSES/BSD-3-Clause.txt" KleidiAI-BSD-3-Clause.txt
 fi
 need "$R/tokenizers-cpp/LICENSE" tokenizers-cpp-LICENSE
-need "$BLD/_deps/httplib-src/LICENSE" cpp-httplib-LICENSE
-need "$BLD/_deps/json-src/LICENSE.MIT" nlohmann-json-LICENSE
+need "${HTTPLIB_SRC:-$BLD/_deps/httplib-src}/LICENSE" cpp-httplib-LICENSE
+need "${JSON_SRC:-$BLD/_deps/json-src}/LICENSE.MIT" nlohmann-json-LICENSE
 need "$SRC/third_party/stb/LICENSE" stb-LICENSE
 # The Rust crates of the tokenizer shim (incl. HuggingFace tokenizers, onig, Oniguruma), per target.
 python3 "$SRC/tools/rust_licenses.py" "$R/tokenizers-cpp/rust" "$ARCH-unknown-linux-musl" "$L" et-server \
