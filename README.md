@@ -111,27 +111,35 @@ measure what the sharing saves.
 On the ai4 build host layout (`~/build-litert`):
 
 ```bash
-tools/et-musl-build.sh     # ExecuTorch v1.5.1 static libraries, once; checks the checkout is v1.5.1
-systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh
+tools/et-musl-build.sh [x86_64|aarch64]   # ExecuTorch v1.5.1 static libraries, once per arch; checks the checkout is v1.5.1
+systemd-run --user --scope -p MemoryMax=8G -p MemorySwapMax=0 ./build-prplos-x86_64.sh   # or ./build-prplos-aarch64.sh
 ./package-release.sh v0.2.0 [x86_64|aarch64]   # BLD, EXECUTORCH_SRC, EXECUTORCH_BUILD select the trees
 ```
 
-Curated (release default) or general build. The releases link a selective ExecuTorch tree that
-registers only the curated operator set, `ops/curated.txt`: the 25 operators ExecuTorch's `gen_oplist`
+`tools/et-musl-build.sh` first applies `patches/musl` (`git format-patch` files against ExecuTorch
+v1.5.1 and against the PyTorch headers its optimized kernels include; `patches/musl/README.md`) with
+`tools/apply-musl-patches.sh`. Every source the build reads, its pin, its licence and how to supply it
+with no network (`KLEIDIAI_SOURCE_DIR` on aarch64, `HTTPLIB_SRC` / `JSON_SRC` for et-server's two
+FetchContent sources) is in `DEPENDENCIES.md`.
+
+Curated (the default) or full operator set. By default the ExecuTorch tree is a selective build that
+registers only the curated operator set, `ops/curated.txt`: the operators ExecuTorch's `gen_oplist`
 finds outside the XNNPACK delegate in every `.pte` of the six use cases of the gateway study (text
 classification, sentence embeddings, image classification, object detection, audio, time series; 16
-models, among them the DistilBERT text export and the MobileNetV2 image export). Build it with
-`ET_SELECT_OPS_FILE=ops/curated.txt EXECUTORCH_BUILD=<tree> tools/et-musl-build.sh`, then
-`EXECUTORCH_BUILD=<tree> ET_SERVER_KERNELS_LIB=<tree>/libexecutorch_selected_kernels.a ./build-prplos-x86_64.sh`.
-A model that needs another operator fails at load. The general build is the same two steps without
-`ET_SELECT_OPS_FILE` and `ET_SERVER_KERNELS_LIB`: every optimized and portable kernel is linked.
-`ET_SELECT_OPS_MODEL=<model-dir>/model.pte` or `ET_SELECT_OPS_LIST=aten::add.out,...` select for your own
-models instead. `-DET_SERVER_BUILD_ET_RUN=ON`
+models, among them the DistilBERT text export and the MobileNetV2 image export), widened for the
+zero-shot and decision models listed in that file. `build-prplos-<arch>.sh` links the tree's
+`libexecutorch_selected_kernels.a` when it has one. A model that needs another operator fails at load.
+`ET_KERNELS=full tools/et-musl-build.sh` builds the full set instead (every optimized and portable
+kernel, `configurations/liboptimized_native_cpu_ops_lib.a`), which `build-prplos-<arch>.sh` then links.
+`ET_SELECT_OPS_FILE=<file>`, `ET_SELECT_OPS_MODEL=<model-dir>/model.pte` or
+`ET_SELECT_OPS_LIST=aten::add.out,...` select for your own models instead. `-DET_SERVER_BUILD_ET_RUN=ON`
 also builds `et-run`, which runs any `.pte` method on a raw float32 input with the same link.
 
-`build-prplos-x86_64.sh` cross-compiles with the prplOS 5.1 gcc 13.3.0 musl toolchain against the raw
-ExecuTorch build tree (`EXECUTORCH_BUILD`) and source checkout (`EXECUTORCH_SRC`), strips the binary,
-and fails unless it needs only `libc.so`, `libgcc_s.so.1` and `libstdc++.so.6`.
+`build-prplos-<arch>.sh` cross-compiles with the prplOS 5.1 gcc 13.3.0 musl toolchain (aarch64:
+cortex-a53, `-march=armv8-a+crc -mtune=cortex-a53`) against the raw ExecuTorch build tree
+(`EXECUTORCH_BUILD`) and source checkout (`EXECUTORCH_SRC`), strips the binary, and fails unless it
+needs only `libc.so`, `libgcc_s.so.1` and `libstdc++.so.6`. On aarch64 it also links the tree's
+KleidiAI archive (XNNPACK's Arm microkernels).
 
 ## Tests
 
